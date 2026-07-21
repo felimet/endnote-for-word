@@ -250,6 +250,22 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertRegex(text, r"(?m)^license: MIT$")
         self.assertLessEqual(len(text.splitlines()), SKILL_MAXIMUM_LINES)
 
+    def test_shared_output_coordination_contract(self) -> None:
+        text = SKILL_PATH.read_text(encoding="utf-8")
+        for phrase in (
+            "## Shared output coordination",
+            "user's current working directory",
+            "Operate as a complete standalone skill",
+            "Do not assume, require, install, or prompt for `mathtype-for-word`",
+            "endnote-for-word-manifest.json",
+            "<source-stem>-mathtype-endnote.docx",
+            "Verify that `mathtype-for-word` is available",
+            "complete only the EndNote scope",
+            "one shared final DOCX",
+            "validate the final shared document with both skills",
+        ):
+            self.assertIn(phrase, text)
+
     def test_skill_states_the_non_negotiable_invariants(self) -> None:
         text = SKILL_PATH.read_text(encoding="utf-8")
         for phrase in (

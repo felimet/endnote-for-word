@@ -38,6 +38,17 @@ Create real EndNote citations and a real bibliography in DOCX by driving EndNote
 - If neither `pwsh.exe` nor `powershell.exe` is available, stop and ask the user to install PowerShell using <https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows>. Never silently downgrade the workflow to typed citations.
 - Read [installation-matrix.md](references/installation-matrix.md) for cross-shell commands and agent-specific installation paths.
 
+## Shared output coordination
+
+- Resolve relative output paths against the user's current working directory. Do not default to the plugin repository or create a tool-named output subdirectory.
+- Obey an explicit user-supplied input, output, or directory. Never reinterpret an explicit path, and never treat an input path as permission to overwrite it.
+- Operate as a complete standalone skill. Do not assume, require, install, or prompt for `mathtype-for-word` merely to complete EndNote work.
+- Prefix retained non-document artifacts with this skill name, for example `endnote-for-word-manifest.json`, `endnote-for-word-references.ris`, or `endnote-for-word-validation.json`.
+- Give every newly generated DOCX a descriptive suffix before its extension. Use `-endnote` when this skill runs alone. Use `-mathtype-endnote`, for example `<source-stem>-mathtype-endnote.docx`, only when `mathtype-for-word` is available and the task requires both skills.
+- Verify that `mathtype-for-word` is available before planning a joint workflow. If it is unavailable, complete only the EndNote scope, keep the standalone suffix, report the unperformed MathType scope, and never claim combined completion.
+- When `mathtype-for-word` is available and required, plan one shared final DOCX. Do not create separate EndNote and MathType document trees or keep one document per skill. Preserve the original source, let the first skill publish the shared working copy, let the second skill continue on that same copy with explicit overwrite authorization, then validate the final shared document with both skills.
+- Keep bridge-owned temporary sibling files temporary. Do not present them as outputs, and remove retained intermediates after the shared document passes both validations.
+
 ## Mandatory workflow
 
 1. Preserve the input DOCX and choose an explicit output path. Reject anything that is not `.docx`.
