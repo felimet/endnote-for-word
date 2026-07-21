@@ -31,6 +31,12 @@ catch {
 }
 
 $Root = Split-Path -Parent $PSScriptRoot
+$CleanupLibrary = Join-Path $Root 'scripts\endnote_cleanup.ps1'
+if (-not (Test-Path -LiteralPath $CleanupLibrary -PathType Leaf)) {
+    throw "Cleanup library is missing: $CleanupLibrary"
+}
+. $CleanupLibrary
+
 $PythonEnvironmentVariable = 'ENDNOTE_WORD_PYTHON'
 $LiveTestEnvironmentVariable = 'ENDNOTE_LIVE_TEST'
 $BytecodeEnvironmentVariable = 'PYTHONDONTWRITEBYTECODE'
@@ -41,6 +47,39 @@ $TestFilePattern = 'test_*.py'
 function Write-Status {
     param([Parameter(Mandatory = $true)][string]$Message)
     [Console]::Error.WriteLine("[run-tests] $Message")
+}
+
+function Test-CleanupHelpers {
+    param([Parameter(Mandatory = $true)][string]$TestRoot)
+
+    $checkDirectory = Join-Path $TestRoot 'cleanup-helper-check'
+    New-Item -ItemType Directory -Path $checkDirectory -ErrorAction Stop | Out-Null
+    $destination = Join-Path $checkDirectory 'output.docx'
+    $staleFile = Join-Path $checkDirectory ('.output.' + [Guid]::NewGuid().ToString('N') + '.tmp.docx')
+    $recentFile = Join-Path $checkDirectory ('.output.' + [Guid]::NewGuid().ToString('N') + '.work.docx')
+    $unrelatedFile = Join-Path $checkDirectory 'keep-me.tmp.docx'
+
+    Set-Content -LiteralPath $staleFile -Value 'stale' -Encoding ASCII
+    Set-Content -LiteralPath $recentFile -Value 'recent' -Encoding ASCII
+    Set-Content -LiteralPath $unrelatedFile -Value 'unrelated' -Encoding ASCII
+    (Get-Item -LiteralPath $staleFile -Force).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+
+    $removed = @(Remove-EndNoteStaleDocumentFiles -Destination $destination -OlderThanHours 24)
+    if ($removed.Count -ne 1 -or -not (Test-EndNoteSamePath -Left $removed[0] -Right $staleFile)) {
+        throw 'The stale document sweep did not report exactly the owned stale artifact.'
+    }
+    if (Test-Path -LiteralPath $staleFile) {
+        throw 'The stale document sweep reported success but left the stale artifact behind.'
+    }
+    if (-not (Test-Path -LiteralPath $recentFile) -or -not (Test-Path -LiteralPath $unrelatedFile)) {
+        throw 'The stale document sweep removed a recent or unrelated file.'
+    }
+    if (-not (Remove-EndNoteGeneratedDocumentFile -Path $recentFile -Destination $destination)) {
+        throw 'The exact generated-file cleanup did not remove its owned artifact.'
+    }
+    if (Test-Path -LiteralPath $recentFile) {
+        throw 'The exact generated-file cleanup did not verify removal.'
+    }
 }
 
 function Resolve-Python {
@@ -86,7 +125,17 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $failures = New-Object System.Collections.Generic.List[string]
-foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -Filter '*.ps1') {
+$sourceRoots = @('scripts', 'tests', 'skills')
+$powerShellFiles = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+foreach ($sourceRoot in $sourceRoots) {
+    $sourcePath = Join-Path $Root $sourceRoot
+    if (Test-Path -LiteralPath $sourcePath -PathType Container) {
+        foreach ($file in Get-ChildItem -LiteralPath $sourcePath -Recurse -Filter '*.ps1' -File) {
+            $powerShellFiles.Add($file)
+        }
+    }
+}
+foreach ($file in $powerShellFiles) {
     $tokens = $null
     $parseErrors = $null
     $null = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$parseErrors)
@@ -102,12 +151,41 @@ if ($failures.Count -gt 0) {
 exit 0
 '@
 
-$parseCheckPath = Join-Path ([System.IO.Path]::GetTempPath()) ('endnote-parse-check-' + [Guid]::NewGuid().ToString('N') + '.ps1')
+$tempParent = [System.IO.Path]::GetTempPath()
+$testTempRoot = Join-Path $tempParent ('endnote-tests-' + [Guid]::NewGuid().ToString('N'))
+$parseCheckPath = Join-Path $testTempRoot 'parse-check.ps1'
 $previousLiveSetting = [Environment]::GetEnvironmentVariable($LiveTestEnvironmentVariable)
 $previousBytecodeSetting = [Environment]::GetEnvironmentVariable($BytecodeEnvironmentVariable)
+$previousTempSetting = [Environment]::GetEnvironmentVariable('TEMP')
+$previousTmpSetting = [Environment]::GetEnvironmentVariable('TMP')
 $checkedHosts = New-Object System.Collections.Generic.List[string]
+$staleTestDirectoriesRemoved = New-Object System.Collections.Generic.List[string]
+$cleanupCompleted = $false
+
+function Restore-TestEnvironment {
+    [Environment]::SetEnvironmentVariable($LiveTestEnvironmentVariable, $previousLiveSetting, 'Process')
+    [Environment]::SetEnvironmentVariable($BytecodeEnvironmentVariable, $previousBytecodeSetting, 'Process')
+    [Environment]::SetEnvironmentVariable('TEMP', $previousTempSetting, 'Process')
+    [Environment]::SetEnvironmentVariable('TMP', $previousTmpSetting, 'Process')
+}
+
+function Complete-TestCleanup {
+    Remove-EndNoteRepoCacheDirectory -RepositoryRoot $Root -RelativePath 'scripts\__pycache__' | Out-Null
+    Remove-EndNoteRepoCacheDirectory -RepositoryRoot $Root -RelativePath 'tests\__pycache__' | Out-Null
+    Remove-EndNoteGeneratedDirectory -Path $testTempRoot -Parent $tempParent -Prefix 'endnote-tests' | Out-Null
+}
 
 try {
+    foreach ($staleDirectory in @(Remove-EndNoteStaleTestDirectories -Parent $tempParent -Prefix 'endnote-tests')) {
+        $staleTestDirectoriesRemoved.Add($staleDirectory) | Out-Null
+        Write-Status "Removed stale test directory: $staleDirectory"
+    }
+    New-Item -ItemType Directory -Path $testTempRoot -ErrorAction Stop | Out-Null
+    Set-Item -Path 'env:TEMP' -Value $testTempRoot
+    Set-Item -Path 'env:TMP' -Value $testTempRoot
+    Test-CleanupHelpers -TestRoot $testTempRoot
+    Write-Status 'Cleanup ownership, stale-age and removal-verification checks passed.'
+
     $python = Resolve-Python
     Write-Status "Using python: $python"
 
@@ -151,6 +229,10 @@ try {
         $liveIntegration = 'passed'
     }
 
+    Restore-TestEnvironment
+    Complete-TestCleanup
+    $cleanupCompleted = $true
+
     [ordered]@{
         ok                = $true
         python            = $python
@@ -158,6 +240,8 @@ try {
         powershell_parse  = 'passed'
         parse_check_hosts = @($checkedHosts)
         live_integration  = $liveIntegration
+        cleanup           = 'verified'
+        stale_removed     = @($staleTestDirectoriesRemoved)
     } | ConvertTo-Json -Depth 5 -Compress
 }
 catch {
@@ -165,19 +249,8 @@ catch {
     throw
 }
 finally {
-    if ($null -eq $previousLiveSetting) {
-        Remove-Item -Path "env:$LiveTestEnvironmentVariable" -ErrorAction SilentlyContinue
-    }
-    else {
-        Set-Item -Path "env:$LiveTestEnvironmentVariable" -Value $previousLiveSetting
-    }
-    if ($null -eq $previousBytecodeSetting) {
-        Remove-Item -Path "env:$BytecodeEnvironmentVariable" -ErrorAction SilentlyContinue
-    }
-    else {
-        Set-Item -Path "env:$BytecodeEnvironmentVariable" -Value $previousBytecodeSetting
-    }
-    if (Test-Path -LiteralPath $parseCheckPath) {
-        Remove-Item -LiteralPath $parseCheckPath -Force -ErrorAction SilentlyContinue
+    if (-not $cleanupCompleted) {
+        Restore-TestEnvironment
+        Complete-TestCleanup
     }
 }

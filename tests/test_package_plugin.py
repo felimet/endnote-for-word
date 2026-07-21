@@ -23,6 +23,7 @@ REQUIRED_FILES = (
     ".mcp.json",
     ".codex-mcp.json",
     "scripts/endnote-word.ps1",
+    "scripts/endnote_cleanup.ps1",
     "scripts/run-mcp.ps1",
     "scripts/endnote_library.py",
     "scripts/mcp_server.py",

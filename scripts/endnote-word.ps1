@@ -37,6 +37,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$cleanupLibraryPath = Join-Path $PSScriptRoot 'endnote_cleanup.ps1'
+if (-not (Test-Path -LiteralPath $cleanupLibraryPath -PathType Leaf)) {
+    throw "Cleanup library is missing: $cleanupLibraryPath"
+}
+. $cleanupLibraryPath
+
 # The console code page on a zh-TW Windows install defaults to cp950, which mangles the JSON
 # result line whenever a style title or author name carries non-ASCII characters.
 try {
@@ -205,6 +211,12 @@ $script:Word = $null
 $script:Document = $null
 $script:Selection = $null
 $script:WorkingCopyPath = $null
+$script:WorkingCopyDestination = $null
+$script:TemporarySavePath = $null
+$script:TemporarySaveDestination = $null
+$script:CleanupFailures = New-Object 'System.Collections.Generic.List[string]'
+$script:CleanupRemoved = New-Object 'System.Collections.Generic.List[string]'
+$script:StaleArtifactsRemoved = New-Object 'System.Collections.Generic.List[string]'
 $script:EndNoteInstallationCache = $null
 $script:CwywTemplateCache = $null
 $script:InstalledStylesCache = $null
@@ -705,31 +717,79 @@ function New-WorkingCopy {
     )
     # The input document is user data and is never opened for writing. Word always edits a
     # private copy that lives beside the destination so the final Move-Item stays on one volume.
+    foreach ($stalePath in @(Remove-EndNoteStaleDocumentFiles -Destination $Destination)) {
+        $script:StaleArtifactsRemoved.Add($stalePath) | Out-Null
+        Write-Log -Level INFO -Message "Removed stale generated document: $stalePath"
+    }
     $directory = Split-Path -Parent $Destination
     $name = '.' + [IO.Path]::GetFileNameWithoutExtension($Destination) + '.' + [Guid]::NewGuid().ToString('N') + $script:WorkingCopySuffix
     $path = Join-Path $directory $name
-    Copy-Item -LiteralPath $SourcePath -Destination $path -Force
     $script:WorkingCopyPath = $path
+    $script:WorkingCopyDestination = $Destination
+    Copy-Item -LiteralPath $SourcePath -Destination $path -Force
     Write-Log -Level INFO -Message "Created working copy: $path"
     return $path
 }
 
 function Remove-WorkingCopy {
     if ([string]::IsNullOrWhiteSpace($script:WorkingCopyPath)) { return }
+    $path = $script:WorkingCopyPath
+    $destination = $script:WorkingCopyDestination
     try {
-        if (Test-Path -LiteralPath $script:WorkingCopyPath) {
-            Remove-Item -LiteralPath $script:WorkingCopyPath -Force
+        if (Remove-EndNoteGeneratedDocumentFile -Path $path -Destination $destination) {
+            $script:CleanupRemoved.Add($path) | Out-Null
         }
     }
     catch {
-        Write-Log -Level WARN -Message "Could not delete the working copy '$($script:WorkingCopyPath)': $($_.Exception.Message)"
+        $message = "Could not delete and verify the working copy '$path': $($_.Exception.Message)"
+        $script:CleanupFailures.Add($message) | Out-Null
+        Write-Log -Level ERROR -Message $message
     }
-    $script:WorkingCopyPath = $null
+    finally {
+        $script:WorkingCopyPath = $null
+        $script:WorkingCopyDestination = $null
+    }
+}
+
+function Remove-PendingTemporarySave {
+    if ([string]::IsNullOrWhiteSpace($script:TemporarySavePath)) { return }
+    $path = $script:TemporarySavePath
+    $destination = $script:TemporarySaveDestination
+    try {
+        if (Remove-EndNoteGeneratedDocumentFile -Path $path -Destination $destination) {
+            $script:CleanupRemoved.Add($path) | Out-Null
+        }
+    }
+    catch {
+        $message = "Could not delete and verify the temporary save '$path': $($_.Exception.Message)"
+        $script:CleanupFailures.Add($message) | Out-Null
+        Write-Log -Level ERROR -Message $message
+    }
+    finally {
+        $script:TemporarySavePath = $null
+        $script:TemporarySaveDestination = $null
+    }
+}
+
+function Assert-EndNoteCleanupSucceeded {
+    if ($script:CleanupFailures.Count -gt 0) {
+        throw ('Cleanup verification failed: ' + ($script:CleanupFailures -join '; '))
+    }
+}
+
+function Get-EndNoteCleanupReport {
+    return [ordered]@{
+        ok            = $script:CleanupFailures.Count -eq 0
+        removed       = @($script:CleanupRemoved)
+        stale_removed = @($script:StaleArtifactsRemoved)
+    }
 }
 
 function Save-DocumentAtomically {
     param([Parameter(Mandatory)][string]$Destination)
     $temporary = Join-Path (Split-Path -Parent $Destination) ('.' + [IO.Path]::GetFileNameWithoutExtension($Destination) + '.' + [Guid]::NewGuid().ToString('N') + $script:TemporaryDocumentSuffix)
+    $script:TemporarySavePath = $temporary
+    $script:TemporarySaveDestination = $Destination
     try {
         Write-Log -Level INFO -Message "Saving temporary DOCX: $temporary"
         $script:Document.SaveAs2($temporary, $script:WdFormatXmlDocument)
@@ -739,7 +799,7 @@ function Save-DocumentAtomically {
         Write-Log -Level INFO -Message "Moved completed DOCX to: $Destination"
     }
     finally {
-        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+        Remove-PendingTemporarySave
     }
 }
 
@@ -1831,6 +1891,7 @@ function Invoke-Render {
         Stop-Word
         Remove-WorkingCopy
     }
+    Assert-EndNoteCleanupSucceeded
 
     Write-JsonResult ([ordered]@{
             ok                     = $true
@@ -1848,6 +1909,7 @@ function Invoke-Render {
             bibliography_present   = $fields.bibliography_codes.Count -gt 0
             endnote_preexisting    = $endNote.preexisting
             endnote_autostarted    = Test-EndNoteAutostarted -KnownProcessIds $endNoteProcessesBefore
+            cleanup                = Get-EndNoteCleanupReport
         })
 }
 
@@ -1901,6 +1963,7 @@ function Invoke-Update {
         Stop-Word
         Remove-WorkingCopy
     }
+    Assert-EndNoteCleanupSucceeded
 
     Write-JsonResult ([ordered]@{
             ok                     = $true
@@ -1912,6 +1975,7 @@ function Invoke-Update {
             bibliography_present   = $fields.bibliography_codes.Count -gt 0
             endnote_preexisting    = $endNote.preexisting
             endnote_autostarted    = Test-EndNoteAutostarted -KnownProcessIds $endNoteProcessesBefore
+            cleanup                = Get-EndNoteCleanupReport
         })
 }
 
@@ -1946,6 +2010,7 @@ function Invoke-SetStyle {
         Stop-Word
         Remove-WorkingCopy
     }
+    Assert-EndNoteCleanupSucceeded
 
     Write-JsonResult ([ordered]@{
             ok                     = $true
@@ -1959,6 +2024,7 @@ function Invoke-SetStyle {
             bibliography_present   = $fields.bibliography_codes.Count -gt 0
             endnote_preexisting    = $endNote.preexisting
             endnote_autostarted    = Test-EndNoteAutostarted -KnownProcessIds $endNoteProcessesBefore
+            cleanup                = Get-EndNoteCleanupReport
         })
 }
 
@@ -2001,6 +2067,7 @@ function Invoke-Unformat {
         Stop-Word
         Remove-WorkingCopy
     }
+    Assert-EndNoteCleanupSucceeded
 
     Write-JsonResult ([ordered]@{
             ok                                = $true
@@ -2010,6 +2077,7 @@ function Invoke-Unformat {
             remaining_native_citation_fields  = $fields.citation_codes.Count
             remaining_bibliography_fields     = $fields.bibliography_codes.Count
             note                              = 'Formatted citations were reverted to temporary {Author, Year #RecNum} text. Run the update action to format them again.'
+            cleanup                           = Get-EndNoteCleanupReport
         })
 }
 
@@ -2052,10 +2120,12 @@ catch {
             error          = $_.Exception.Message
             error_location = $errorLocation
             script_stack   = $scriptStack
+            cleanup_errors = @($script:CleanupFailures)
         })
     exit 1
 }
 finally {
     Stop-Word
+    Remove-PendingTemporarySave
     Remove-WorkingCopy
 }

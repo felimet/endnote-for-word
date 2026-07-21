@@ -204,8 +204,11 @@ bridge does and does not do here:
 - `unformat` refuses to write in place at all, even with `-Overwrite`, because it is a
   destructive transformation of user content.
 
-If a `.<name>.<guid>.tmp.docx` file is left behind by a killed job, it is safe to delete once
-no Word process holds it.
+On the next run for the same destination, the bridge safely sweeps abandoned
+`.<name>.<guid>.work.docx` and `.<name>.<guid>.tmp.docx` siblings older than 24 hours. It checks
+the exact destination-specific name, refuses directories and reparse points, deletes only from
+the destination directory, and verifies that each removed file is gone. A newer artifact is
+left alone because another run may still own it.
 
 ## cp950 console mangling
 

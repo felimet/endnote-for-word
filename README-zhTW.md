@@ -58,7 +58,7 @@ pwsh.exe -NoProfile -ExecutionPolicy Bypass -File scripts/endnote-word.ps1 -Acti
 從 https://github.com/felimet/endnote-for-word 安裝或升級 EndNote for Word toolkit。偵測我目前可用的終端機，並使用 PowerShell 7、Windows PowerShell 5.1、Windows 上的 Bash，包括 Git Bash，或 CMD；有 pwsh.exe 時優先使用，否則退回 powershell.exe。在 WSL Bash 中呼叫 Windows 側執行檔，不使用 Linux pwsh。兩者皆不存在時，停止執行並提示我依 https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows 安裝 PowerShell。確認 Microsoft Word 桌面版，以及安裝了 Cite While You Write 增益集的桌面版 EndNote 均可使用；安裝可攜式 skill、註冊本機 stdio MCP server、執行 probe 與 repository 測試、保留既有 Agent 設定，並列出所有異動檔案。probe 未回報 cwyw_macro_callable 為 true，或 validation 未回傳 ok: true 時，不得宣稱完成。
 ```
 
-若尚無 library，先依[快速測試 Prompt](#快速測試-prompt)請 Agent 搜尋論文並匯出 RIS；若已有 library，直接提供 DOCX 與 `.enl` 路徑。若未另外指定，使用 IEEE。
+若尚無 library，先依[快速測試 Prompt](#快速測試-prompt)請 Agent 搜尋論文並匯出 RIS；若已有 library，直接提供 DOCX 與 `.enl` 路徑。你可以直接告訴 Agent 偏好的 EndNote Output Style，例如 `IEEE` 或 `APA 7th`（APA 7）；未指定時使用 IEEE。Agent 在編輯 Word 前必須確認該樣式已安裝，且不得擅自改用其他樣式。
 
 各平台 skill 位置與 MCP 設定見[安裝矩陣](skills/endnote-for-word/references/installation-matrix.md)。
 
@@ -214,7 +214,7 @@ pwsh.exe -NoProfile -ExecutionPolicy Bypass -File scripts/endnote-word.ps1 -Acti
 pwsh.exe -NoProfile -ExecutionPolicy Bypass -File tests/run-tests.ps1
 ```
 
-Bridge 會保留來源檔，透過同層暫存 DOCX 完成儲存；除非明確指定 `-Overwrite`，否則不覆寫既有輸出。即時整合測試需自行啟用，並提供真實書目庫路徑。
+Bridge 會保留來源檔，透過同層暫存 DOCX 完成儲存；除非明確指定 `-Overwrite`，否則不覆寫既有輸出。Cleanup 採統一且可驗證的流程：每次執行只會刪除工具自己建立的 `.<name>.<guid>.work.docx` 與 `.<name>.<guid>.tmp.docx` 同層檔案、確認檔案已不存在，並安全掃除超過 24 小時且符合相同命名規則的遺留檔。Repository 測試會將暫存內容隔離在唯一命名的目錄、移除 Python cache，cleanup 驗證失敗時整體測試也會失敗。即時整合測試需自行啟用，並提供真實書目庫路徑。
 
 ## 快速測試 Prompt
 

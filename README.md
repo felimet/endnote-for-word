@@ -58,7 +58,7 @@ If you want to use EndNote for Word in Claude Code, Claude Desktop, Codex, or Ch
 Install or upgrade the EndNote for Word toolkit from https://github.com/felimet/endnote-for-word. Detect my available terminal and use PowerShell 7, Windows PowerShell 5.1, Bash on Windows including Git Bash, or CMD; prefer pwsh.exe when it exists and fall back to powershell.exe. From WSL Bash, invoke the Windows-side executable rather than Linux pwsh. If neither is available, stop and tell me to install PowerShell using https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows. Verify Microsoft Word desktop plus desktop EndNote with the Cite While You Write add-in, install the portable skill, register the local stdio MCP server, run the probe and the repository tests, preserve existing agent configuration, and report every changed file. Do not claim success unless the probe reports cwyw_macro_callable true and validation returns ok: true.
 ```
 
-If you have no library yet, ask the Agent to find a paper and export RIS first, as shown in the [quick test prompt](#quick-test-prompt). Otherwise, provide the DOCX and `.enl` paths directly. IEEE is used unless you explicitly request another installed style.
+If you have no library yet, ask the Agent to find a paper and export RIS first, as shown in the [quick test prompt](#quick-test-prompt). Otherwise, provide the DOCX and `.enl` paths directly. Tell the Agent your preferred EndNote output style, for example `IEEE` or `APA 7th` (`APA 7`). If you omit it, IEEE is used. The Agent must confirm that the style is installed before editing Word and must not silently substitute another style.
 
 Platform-specific skill locations and MCP configuration are documented in the [installation matrix](skills/endnote-for-word/references/installation-matrix.md).
 
@@ -214,7 +214,7 @@ pwsh.exe -NoProfile -ExecutionPolicy Bypass -File scripts/endnote-word.ps1 -Acti
 pwsh.exe -NoProfile -ExecutionPolicy Bypass -File tests/run-tests.ps1
 ```
 
-The bridge preserves source files, writes through a temporary sibling DOCX, and refuses to replace an existing output unless `-Overwrite` is explicit. Live integration tests are opt-in and need a real library path.
+The bridge preserves source files, writes through a temporary sibling DOCX, and refuses to replace an existing output unless `-Overwrite` is explicit. Cleanup is unified and verified: each run removes only tool-owned `.<name>.<guid>.work.docx` and `.<name>.<guid>.tmp.docx` siblings, confirms they no longer exist, and safely sweeps matching abandoned artifacts older than 24 hours. Repository tests isolate their temporary files in a uniquely named directory, remove Python caches, and fail if cleanup verification fails. Live integration tests are opt-in and need a real library path.
 
 ## Quick test prompt
 

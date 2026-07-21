@@ -504,7 +504,13 @@ def _sqlite_reader(database_path: Path) -> Iterator[sqlite3.Connection]:
         try:
             shutil.rmtree(temp_directory)
         except OSError as exc:
-            LOGGER.warning("could not remove temporary directory %s: %s", temp_directory, exc)
+            raise RuntimeError(
+                f"could not remove temporary EndNote library copy: {temp_directory}"
+            ) from exc
+        if temp_directory.exists():
+            raise RuntimeError(
+                f"cleanup verification failed; temporary EndNote library copy remains: {temp_directory}"
+            )
 
 
 def _row_to_raw(row: Sequence[Any]) -> dict[str, Any]:

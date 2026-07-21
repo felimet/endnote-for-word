@@ -26,6 +26,12 @@ catch {
 }
 
 $Root = Split-Path -Parent $PSScriptRoot
+$CleanupLibrary = Join-Path $Root 'scripts\endnote_cleanup.ps1'
+if (-not (Test-Path -LiteralPath $CleanupLibrary -PathType Leaf)) {
+    throw "Cleanup library is missing: $CleanupLibrary"
+}
+. $CleanupLibrary
+
 $Bridge = Join-Path $Root 'scripts\endnote-word.ps1'
 $FixtureManifest = Join-Path $PSScriptRoot 'fixtures\live-manifest.json'
 $LibraryEnvironmentVariable = 'ENDNOTE_TEST_LIBRARY'
@@ -140,10 +146,27 @@ if ([string]::IsNullOrWhiteSpace($TargetStyle)) {
     $TargetStyle = $DefaultTargetStyle
 }
 
-$testDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ('endnote-live-' + [Guid]::NewGuid().ToString('N'))
+$tempParent = [System.IO.Path]::GetTempPath()
+$testDirectory = Join-Path $tempParent ('endnote-live-' + [Guid]::NewGuid().ToString('N'))
 $baselineWordPids = @(Get-Process -Name 'WINWORD' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+$staleTestDirectoriesRemoved = New-Object System.Collections.Generic.List[string]
+$cleanupCompleted = $false
+$cleanupStatus = 'pending'
+
+function Complete-LiveCleanup {
+    if ($KeepArtifacts) {
+        Write-Status "Kept test artifacts: $testDirectory"
+        return 'kept'
+    }
+    Remove-EndNoteGeneratedDirectory -Path $testDirectory -Parent $tempParent -Prefix 'endnote-live' | Out-Null
+    return 'verified'
+}
 
 try {
+    foreach ($staleDirectory in @(Remove-EndNoteStaleTestDirectories -Parent $tempParent -Prefix 'endnote-live')) {
+        $staleTestDirectoriesRemoved.Add($staleDirectory) | Out-Null
+        Write-Status "Removed stale live-test directory: $staleDirectory"
+    }
     New-Item -ItemType Directory -Path $testDirectory | Out-Null
     $inputPath = Join-Path $testDirectory 'input.docx'
     $outputPath = Join-Path $testDirectory 'output.docx'
@@ -215,6 +238,9 @@ try {
         Write-Status "Target style '$TargetStyle' is not installed; the style switch step was skipped."
     }
 
+    $cleanupStatus = Complete-LiveCleanup
+    $cleanupCompleted = $true
+
     [ordered]@{
         ok            = $true
         library       = $library
@@ -227,6 +253,8 @@ try {
         validation    = $validation
         restyle       = $restyle
         revalidation  = $revalidation
+        cleanup       = $cleanupStatus
+        stale_removed = @($staleTestDirectoriesRemoved)
     } | ConvertTo-Json -Depth $JsonDepth
 }
 catch {
@@ -240,10 +268,7 @@ finally {
         Write-Status ('Test-created Word process(es) remain; not terminating automatically: ' +
             (($newWordProcesses | ForEach-Object { $_.Id }) -join ', '))
     }
-    if (-not $KeepArtifacts -and (Test-Path -LiteralPath $testDirectory)) {
-        Remove-Item -LiteralPath $testDirectory -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    elseif ($KeepArtifacts) {
-        Write-Status "Kept test artifacts: $testDirectory"
+    if (-not $cleanupCompleted) {
+        $cleanupStatus = Complete-LiveCleanup
     }
 }

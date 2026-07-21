@@ -48,6 +48,7 @@ def package(root: Path, output: Path) -> str:
         root / ".mcp.json",
         root / ".codex-mcp.json",
         root / "scripts" / "endnote-word.ps1",
+        root / "scripts" / "endnote_cleanup.ps1",
         root / "scripts" / "run-mcp.ps1",
         root / "scripts" / "endnote_library.py",
         root / "scripts" / "mcp_server.py",
