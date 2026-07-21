@@ -9,8 +9,11 @@ An installable AI Agent skill, Codex/Claude plugin, and MCP server that inserts 
 - Replaces `{{CITE:id}}` markers in a DOCX with real CWYW citations, so every citation becomes an `ADDIN EN.CITE` field carrying an EndNote traveling library, and the bibliography becomes an `ADDIN EN.REFLIST` field.
 - Never types citation text, never fabricates field codes in OOXML, and never passes off a plain-text reference list as a real bibliography.
 - Reads your `.enl` library read-only so an agent can search for references and confirm every record number before Word is ever opened.
+- Uses IEEE by default, requires a DOI for every cited reference, verifies each DOI through doi.org, and rejects doubled resolver prefixes.
+- Supports both IEEE Default Format `[x]` and EndNote's Display as Author (Year), which produces forms such as `Author et al. [x]` for narrative prose.
 - Pre-checks the manifest against the library and against the installed output styles, because an unknown record number or an unknown style name makes EndNote open a modal dialog that blocks automation until the process is killed.
-- Switches the document output style (for example APA 7th to IEEE) programmatically and rebuilds the bibliography, with no dialog.
+- Keeps Word hidden and starts EndNote with a hidden window when the bridge needs to launch it.
+- Switches the document output style programmatically and rebuilds the bibliography, with no dialog.
 - Validates the finished document structurally and reports counts, style, and the libraries recorded in the document.
 - Exports a RIS file so references that are not yet in your library can be imported in one step.
 
@@ -21,6 +24,7 @@ An installable AI Agent skill, Codex/Claude plugin, and MCP server that inserts 
 - Desktop **EndNote** for Windows with the **Cite While You Write** Word add-in installed and enabled. This is a hard prerequisite: without the CWYW add-in there is no supported way to produce native citation fields, and the tool refuses to fake them.
 - Python 3 on `PATH`.
 - PowerShell 7 as `pwsh.exe`, or Windows PowerShell 5.1 as `powershell.exe`.
+- HTTPS access to `doi.org` for the mandatory pre-citation DOI check.
 
 This project is developed and verified against **EndNote 21** with the 64-bit CWYW add-in (`EndNote.WordAddin.Connect`) and its global Word template `EndNote Cwyw.dotm`. The EndNote executable, the styles directory, and the CWYW template are discovered from the registry and from the installation directories at run time, newest version first, so no version number is hardcoded.
 
@@ -53,7 +57,7 @@ If you want to use EndNote for Word in Claude Code, Claude Desktop, Codex, or Ch
 Install or upgrade the EndNote for Word toolkit from https://github.com/felimet/endnote-for-word. Detect my available terminal and use PowerShell 7, Windows PowerShell 5.1, Bash on Windows including Git Bash, or CMD; prefer pwsh.exe when it exists and fall back to powershell.exe. From WSL Bash, invoke the Windows-side executable rather than Linux pwsh. If neither is available, stop and tell me to install PowerShell using https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows. Verify Microsoft Word desktop plus desktop EndNote with the Cite While You Write add-in, install the portable skill, register the local stdio MCP server, run the probe and the repository tests, preserve existing agent configuration, and report every changed file. Do not claim success unless the probe reports cwyw_macro_callable true and validation returns ok: true.
 ```
 
-Then tell your agent which DOCX to edit, which `.enl` library to cite from, and which output style to use.
+Then tell your agent which DOCX to edit and which `.enl` library to cite from. IEEE is used unless you explicitly request another installed style.
 
 Platform-specific skill locations and MCP configuration are documented in the [installation matrix](skills/endnote-for-word/references/installation-matrix.md).
 
@@ -110,10 +114,10 @@ ChatGPT cannot connect directly to the bundled local stdio MCP command. It requi
 
 1. **Probe.** Confirm Word COM, the EndNote executable, the CWYW add-in registration, the loaded CWYW template, and that a CWYW macro is callable. The macro check runs on a throwaway empty document so it cannot touch your files.
 2. **Choose a style.** List the installed `.ens` output styles and pick an exact name. A style name that does not resolve to an installed file makes EndNote open a modal dialog and hangs the run.
-3. **Find the references.** Search the `.enl` library read-only and collect the record numbers, first-author surnames, and years.
-4. **Write the manifest.** One entry per citation, each with a unique marker that occurs exactly once in the document.
-5. **Pre-check.** Verify every record number exists in the library, is not in the trash, and that the surname and year in the manifest match the stored record. A record number that does not exist makes EndNote open a "select matching reference" dialog and hangs the run.
-6. **Render.** The bridge copies the input to the output path, sets the document's `EN.Layout` style variable, replaces each marker with EndNote temporary citation text such as `{Thomsen, 2023 #1}`, runs the CWYW `ENFormatBibliography` macro, waits for the expected field count, and saves atomically.
+3. **Find the references.** Search the `.enl` library read-only and collect the record numbers, first-author surnames, years, and bare DOIs.
+4. **Write the manifest.** One entry per citation, each with a unique marker and an explicit display decision. Use `author-year` only when the citation is a grammatical part of the sentence; use `default` for claim support and merged citations.
+5. **Pre-check.** Verify every record exists, is live, matches surname, year, and DOI, stores a bare DOI, and resolves successfully through doi.org.
+6. **Render silently.** The bridge keeps Word hidden, starts EndNote hidden when needed, creates native citation fields, applies `ENAuthorYearFormat` only where requested, and saves atomically.
 7. **Validate.** Re-open the result read-only and run every gate below.
 
 Prepare markers in your DOCX first, for example:
@@ -131,12 +135,13 @@ See [`examples/example-manifest.json`](examples/example-manifest.json) for a com
 {
   "schema_version": 1,
   "library": { "path": "C:\\EndNoteLibraries\\ExampleLibrary.enl" },
-  "style": "APA 7th",
+  "style": "IEEE",
   "citations": [
     {
       "id": "thomsen2023",
       "marker": "{{CITE:thomsen2023}}",
-      "targets": [ { "rec_number": 1, "author": "Thomsen", "year": 2023 } ],
+      "targets": [ { "rec_number": 1, "author": "Thomsen", "year": 2023, "doi": "10.0000/fixture.0001" } ],
+      "display": "default",
       "pages": "45-46"
     }
   ],
@@ -150,11 +155,12 @@ See [`examples/example-manifest.json`](examples/example-manifest.json) for a com
 | `citations` | Non-empty array. Unknown top-level and per-citation keys are rejected. |
 | `id` | Matches `^[A-Za-z][A-Za-z0-9_-]*$` and is globally unique. |
 | `marker` | Globally unique, and must occur exactly once in the document. |
-| `targets` | Non-empty. Each target has an integer `rec_number` greater than zero, a non-empty `author` surname, and an integer `year`. |
+| `targets` | Non-empty. Each target has an integer `rec_number` greater than zero, a non-empty `author` surname, an integer `year`, and a bare `doi`. |
+| `display` | `default` for `[x]`, or `author-year` for `Author et al. [x]` under IEEE. `author-year` requires one target. |
 | `pages` | Optional. Matches `^[0-9]+(\s*-\s*[0-9]+)?$`. Allowed only when `targets` has exactly one entry. |
 | `suffix` | Optional free text such as `", p. 99"`. Allowed only when `targets` has exactly one entry. |
 | `library.path` | Must exist and have a sibling `<name>.Data` directory. |
-| `style` | Non-empty string that resolves to an installed `.ens` style. |
+| `style` | Optional non-empty installed `.ens` style. Omit it to use the configured default, `IEEE`. |
 
 Each citation becomes one temporary citation, so a merged entry with several targets produces one field, not several:
 
@@ -166,6 +172,12 @@ Each citation becomes one temporary citation, so a merged entry with several tar
 
 `pages` and `suffix` apply to the last target only, which is why they are restricted to single-target citations.
 
+### IEEE DOI output style
+
+The EndNote Bibliography Templates must place the literal `doi: https://doi.org/` immediately before the `DOI` field. Store only the bare DOI in EndNote. Journal Article, Conference Paper, and Web Page templates are specified in [styles-and-formatting.md](skills/endnote-for-word/references/styles-and-formatting.md). EndNote built-in styles must be opened and saved with **Save As** into the personal Styles folder; do not overwrite the installed style.
+
+The manifest precheck refuses records whose EndNote DOI field already contains `doi:` or `https://doi.org/`. RIS export accepts those forms as input but writes one canonical bare `DO` value. Document validation then proves the visible bibliography contains exactly `doi: https://doi.org/<DOI>` for every cited target.
+
 ## Validation gates
 
 `validate` fails the run with `ok: false` and exit code `3` when any gate fails.
@@ -174,10 +186,12 @@ Each citation becomes one temporary citation, so a merged entry with several tar
 2. No residual temporary citation text remains, matched with `\{[^{}]*#\d+[^{}]*\}` over the document text.
 3. The native citation field count equals the manifest citation count. Counting rule: fields whose code starts with `ADDIN EN.CITE`, minus fields whose code starts with `ADDIN EN.CITE.DATA`, because a large traveling library payload is moved into a nested data field.
 4. When `bibliography.expected` is true, exactly one `ADDIN EN.REFLIST` field exists and its result text is not empty.
-5. Every manifest record number appears as `<rec-number>N</rec-number>` in some citation field's traveling library XML, and the matching author surname appears in the same field.
-6. The document text contains no `Error!`, `Reference source not found`, `{Citation}`, or `{Bibliography}` placeholder strings.
-7. The `EN.Layout` document variable exists and its style matches the manifest style, compared case-insensitively.
-8. The `EN.Libraries` document variable exists and lists every manifest record number inside `<record-ids>`.
+5. Every DOI is visibly printed as `doi: https://doi.org/<DOI>`, with no doubled resolver prefix.
+6. Every manifest record number appears as `<rec-number>N</rec-number>` in some citation field's traveling library XML, and the matching author surname appears in the same field.
+7. Every `author-year` native field result visibly contains its author surname.
+8. The document text contains no `Error!`, `Reference source not found`, `{Citation}`, or `{Bibliography}` placeholder strings.
+9. The `EN.Layout` document variable exists and its style matches the manifest style, compared case-insensitively.
+10. The `EN.Libraries` document variable exists and lists every manifest record number inside `<record-ids>`.
 
 ## Version 1 limitations
 
@@ -201,6 +215,14 @@ pwsh.exe -NoProfile -ExecutionPolicy Bypass -File tests/run-tests.ps1
 
 The bridge preserves source files, writes through a temporary sibling DOCX, and refuses to replace an existing output unless `-Overwrite` is explicit. Live integration tests are opt-in and need a real library path.
 
+## Quick test prompt
+
+Place one unique `{{CITE:test}}` marker in a test DOCX, replace the three placeholders below, and give the prompt to your AI Agent:
+
+```text
+Use endnote-for-word to insert the reference whose DOI is "<bare DOI>" from the EndNote library "<full .enl path>" at {{CITE:test}} in "<full .docx path>". Preserve the source and write a new output file. Use IEEE by default; use Display As: Author (Year) when the marker is the grammatical author subject, otherwise use Default Format. Keep Word and EndNote silent. Verify the DOI before citing, then validate the native EndNote citation and bibliography fields and confirm that the bibliography displays doi: https://doi.org/<DOI>. Finally, report the output path and validation result.
+```
+
 ## Repository layout
 
 | Path | Purpose |
@@ -219,6 +241,10 @@ python scripts/package_plugin.py
 ```
 
 The command creates `dist/endnote-for-word-plugin.zip` and its SHA-256 file. The standalone skill package is `dist/endnote-for-word.skill`.
+
+## Issues and discussion
+
+If you have any questions or problems, please open a GitHub Issue to report them and join the discussion.
 
 ## License
 

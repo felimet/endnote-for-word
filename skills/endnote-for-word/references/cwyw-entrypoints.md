@@ -145,7 +145,7 @@ ENUpdateEditCitations
 ```
 
 The build spec records the names only. It does not record parameters, return values, or
-non interactive behaviour for any macro outside the four listed in the next section, so
+non interactive behaviour for any macro outside the verified list in the next section, so
 treat the rest as unverified and do not call them from automation on the assumption that
 they behave.
 
@@ -154,11 +154,12 @@ they behave.
 | Macro | Use | Notes |
 |---|---|---|
 | `ENFormatBibliography` | Format every temporary citation and rebuild the bibliography | Core of `render`, `update` and `set-style`. Non interactive. |
+| `ENAuthorYearFormat` | Apply Display as Author (Year) to the selected native citation | Used only for single-target manifest entries with `display: author-year`. Under a numbered style, EndNote places author names before the citation number. |
 | `ENUnformatCitations` | Revert formatted citations back to `{Author, Year #RecNum}` text | Backs the `unformat` action. New output file only. Measured non interactive: it dropped the spike document from four fields to zero and restored the temporary citation text. |
 | `ENRemoveFieldCodes` | Strip field codes to plain text | **Never called.** Measured to raise a modal confirmation dialog and never return under automation. |
 | `ENToggleInstantFormatting` | Toggle instant formatting | Present, but not used in v1 automation. |
 
-Only the first two rows are ever invoked. Three prohibitions:
+Only the first three rows are ever invoked. Three prohibitions:
 
 - `ENRemoveFieldCodes` hangs, so there is no `remove-field-codes` bridge action and no
   `remove_endnote_field_codes` MCP tool. Converting a document to plain text stays a manual

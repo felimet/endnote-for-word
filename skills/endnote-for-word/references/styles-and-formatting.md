@@ -10,6 +10,8 @@
 6. Discovering installed styles
 7. Reading `EN.Layout` offline
 8. Validation coupling
+9. IEEE DOI template contract
+10. Default Format and Author (Year)
 
 ## Where the style is stored
 
@@ -227,3 +229,54 @@ Two of the validation gates depend on this document:
 A style switch that produced an empty bibliography fails gate 4 even though gate 7 passes.
 That combination usually means `ENFormatBibliography` was interrupted, not that the style is
 wrong. Re-run `update` and validate again before touching the manifest.
+
+## IEEE DOI template contract
+
+IEEE is the Agent default. The style's Bibliography Templates, not the Word document and not
+the manifest, own the punctuation and field placement. Every reference type that can be cited
+must emit the literal `doi: https://doi.org/` followed by the EndNote `DOI` field. The library
+field itself must contain only the bare DOI, for example `10.1109/5.771073`.
+
+The three primary templates are:
+
+```text
+Journal Article
+Author, "Title," |(in Language), |Journal, |Type of Article |vol. Volume, no. Issue, Part/Supplement, p.^pp. Pages, Date Year|, Art no. Article Number|, doi: https://doi.org/DOI|. Original Publication|.
+
+Conference Paper
+Author, "Title," presented at the Conference Name, Conference Location, Date, Year|, Type|, Paper No.|, doi: https://doi.org/DOI|. [Online]. Available: URL|.
+
+Web Page
+Author. "Title." Publisher. doi: https://doi.org/DOI. URL (accessed Access Date).
+```
+
+In EndNote's editor, use the `Link Adjacent Text` operator around optional DOI phrases so
+the literal disappears when the field is empty. This project nevertheless blocks any cited
+record with an empty DOI before Word opens. The style editor must use `Save As`; installed
+styles are not overwritten. Save the result in the personal Styles folder and confirm its
+base name through `list_endnote_styles`.
+
+The validator reads the visible `ADDIN EN.REFLIST` result. It fails when any manifest DOI is
+not present in the exact form `doi: https://doi.org/<DOI>` or when it sees a doubled resolver
+such as `https://doi.org/https://doi.org/<DOI>`. This makes a bad template or a prefixed DOI
+field a hard failure instead of a cosmetic defect.
+
+## Default Format and Author (Year)
+
+Each manifest citation may declare one of two display modes:
+
+| Manifest value | EndNote behavior under IEEE | Use when |
+|---|---|---|
+| `default` | Output style default, normally `[1]` | The reference supports a claim or a merged group. |
+| `author-year` | `ENAuthorYearFormat`, normally `Author et al. [1]` | The author is a grammatical subject or named actor in the sentence. |
+
+`author-year` is restricted to one target. Place its marker where the complete author phrase
+belongs, for example `{{CITE:smith}} demonstrated the effect.` Do not write
+`Smith {{CITE:smith}} demonstrated the effect`, because EndNote itself supplies `Smith` and
+the result would duplicate the name. For a normal evidence citation, write
+`The effect was reproducible {{CITE:smith}}.` and use `default`.
+
+The bridge first creates every genuine `ADDIN EN.CITE` field through
+`ENFormatBibliography`, then selects only the requested native fields by document order and
+calls `ENAuthorYearFormat`. It never types the author or citation number. Word stays hidden,
+and an EndNote process started by the bridge also stays hidden.

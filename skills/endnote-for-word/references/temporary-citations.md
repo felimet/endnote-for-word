@@ -61,9 +61,10 @@ possible point:
   template but are not called by the bridge; the spike did not establish a non interactive
   call path for them.
 
-If a manuscript genuinely needs "see Thomsen (2023)" style narrative citations, produce
-the prose around a plain supported citation, or hand the document to the user for manual
-editing in the EndNote ribbon. Do not attempt the backslash syntax.
+For narrative citations, use the manifest's `display: author-year` mode instead of the
+backslash syntax. The bridge first creates a native field, selects that field, and invokes
+EndNote's non-interactive `ENAuthorYearFormat` macro. Under IEEE the result is a form such
+as `Thomsen et al. [1]`. The marker must replace the entire author phrase.
 
 ## The nonexistent record trap
 
@@ -78,8 +79,9 @@ opened at all:
    (`<Library>.Data\sdb\sdb.eni`) through `precheck_endnote_manifest`.
 2. The record must exist, must have `trash_state = 0`, must have a first author surname
    matching the manifest `author` case insensitively and accent tolerantly, and must have
-   a matching `year`.
-3. The precheck reports every mismatch, not just the first, so a manifest can be fixed in
+   a matching `year` and bare DOI.
+3. The DOI must resolve successfully through the official doi.org Proxy API.
+4. The precheck reports every mismatch, not just the first, so a manifest can be fixed in
    one pass.
 
 The same class of guard applies to the output style. An unknown style name also opens a

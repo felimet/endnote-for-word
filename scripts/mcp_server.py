@@ -25,7 +25,7 @@ from typing import Any, BinaryIO
 
 
 SERVER_NAME = "endnote-for-word"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 SCRIPT_PATH = Path(__file__).with_name("endnote-word.ps1")
 SCRIPT_DIRECTORY = SCRIPT_PATH.parent
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
@@ -41,6 +41,7 @@ POWERSHELL_INSTALL_URL = (
 # Bridge process budget. EndNote can take a long time to open a large library before the
 # first ENFormatBibliography call returns, hence the generous default.
 TIMEOUT_ENV_VARIABLE = "ENDNOTE_WORD_TIMEOUT_SECONDS"
+PYTHON_ENV_VARIABLE = "ENDNOTE_WORD_PYTHON"
 DEFAULT_TIMEOUT_SECONDS = 240
 
 # Processes the timeout watchdog is allowed to clean up. Only PIDs that appeared during the
@@ -161,7 +162,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "search_endnote_library",
         "description": (
             "Search an EndNote library read-only and return matching references with their "
-            "rec_number, authors, year, title, journal, pages and DOI. Accepts a .enl library "
+            "rec_number, authors, year, title, journal, pages, bare DOI and canonical DOI URL. Accepts a .enl library "
             "(read through a temporary copy of its SQLite store) or an EndNote XML export. Every "
             "rec_number used in a manifest must come from this tool."
         ),
@@ -231,9 +232,10 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Verify every citation target in a manifest against the library before Word is opened: "
             "the record must exist, must not be in the trash, and its first-author surname and year "
-            "must match. A missing record makes EndNote open a blocking 'select matching reference' "
-            "dialog, so this check is mandatory before render. Read-only; reports every problem, not "
-            "just the first."
+            "must match. Every target must have a matching bare DOI, and every DOI must resolve through "
+            "the official doi.org Proxy REST API. A missing record makes EndNote open a blocking "
+            "'select matching reference' dialog, so this check is mandatory before render. Read-only; "
+            "reports every problem, not just the first."
         ),
         "inputSchema": {
             "type": "object",
@@ -252,7 +254,7 @@ TOOLS: list[dict[str, Any]] = [
             "readOnlyHint": True,
             "destructiveHint": False,
             "idempotentHint": True,
-            "openWorldHint": False,
+            "openWorldHint": True,
         },
     },
     {
@@ -276,9 +278,11 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Replace {{CITE:id}} manifest markers in a DOCX with EndNote temporary citations, then "
             "run the CWYW macro ENFormatBibliography so EndNote produces genuine ADDIN EN.CITE "
-            "fields with a traveling library and an ADDIN EN.REFLIST bibliography. Writes a new "
-            "output file; pass overwrite=true only to replace an existing output. Run "
-            "precheck_endnote_manifest and list_endnote_styles first."
+            "fields with a traveling library and an ADDIN EN.REFLIST bibliography. Per-citation "
+            "display supports 'default' for [x] and 'author-year' for Author et al. [x] under IEEE. "
+            "The bridge repeats the DOI precheck, and Word plus any EndNote instance it starts remain "
+            "hidden. Writes a new output file; pass overwrite=true only to replace an existing output. "
+            "Run precheck_endnote_manifest and list_endnote_styles first."
         ),
         "inputSchema": {
             "type": "object",
@@ -296,7 +300,7 @@ TOOLS: list[dict[str, Any]] = [
             "readOnlyHint": False,
             "destructiveHint": True,
             "idempotentHint": False,
-            "openWorldHint": False,
+            "openWorldHint": True,
         },
     },
     {
@@ -304,8 +308,9 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Open a DOCX read-only and verify the citation gates: no leftover {{CITE:}} markers or "
             "temporary citation text, the expected number of ADDIN EN.CITE fields, a non-empty "
-            "ADDIN EN.REFLIST bibliography, every manifest rec_number present in the traveling "
-            "library XML, and the EN.Layout and EN.Libraries document variables. Supply "
+            "ADDIN EN.REFLIST bibliography with every visible canonical DOI link, no doubled DOI "
+            "resolver, every requested Author (Year) display, every manifest rec_number present "
+            "in the traveling library XML, and the EN.Layout and EN.Libraries document variables. Supply "
             "manifest_path to enable the manifest-dependent gates."
         ),
         "inputSchema": {
@@ -410,8 +415,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "export_reference_import_file",
         "description": (
             "Write a UTF-8 RIS file from reference objects so the user can import new references "
-            "into their EndNote library themselves. This plugin never writes to a library; import "
-            "stays a manual, user-controlled step."
+            "into their EndNote library themselves. DOI is required and is normalised to one bare "
+            "DO tag even when the input contains one or more resolver prefixes. This plugin never "
+            "writes to a library; import stays a manual, user-controlled step."
         ),
         "inputSchema": {
             "type": "object",
@@ -424,7 +430,7 @@ TOOLS: list[dict[str, Any]] = [
                     "items": {
                         "type": "object",
                         "properties": RIS_REFERENCE_PROPERTIES,
-                        "required": ["title"],
+                        "required": ["title", "doi"],
                         "additionalProperties": False,
                     },
                 },
@@ -644,6 +650,7 @@ def _invoke_bridge(action: str, arguments: dict[str, Any], timeout: int | None =
             errors="replace",
             timeout=effective_timeout,
             check=False,
+            env={**os.environ, PYTHON_ENV_VARIABLE: sys.executable},
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except subprocess.TimeoutExpired as exc:
@@ -834,11 +841,13 @@ def _handle(message: dict[str, Any]) -> dict[str, Any] | None:
                 "instructions": (
                     "Probe first, then resolve every rec_number with search_endnote_library and "
                     "confirm the output style with list_endnote_styles. Run "
-                    "precheck_endnote_manifest before rendering, because an unknown record or style "
-                    "makes EndNote open a modal dialog that hangs the run. Render from a schema v1 "
-                    "manifest into a new file, then validate. Citations must be CWYW-produced ADDIN "
-                    "EN.CITE fields with a traveling library and an ADDIN EN.REFLIST bibliography; "
-                    "never type citation text by hand. The library is read-only."
+                    "precheck_endnote_manifest before rendering. Every cited record must carry a bare "
+                    "DOI that resolves at doi.org. Use IEEE by default. Set display='author-year' only "
+                    "when the author is a grammatical part of the sentence; use display='default' for "
+                    "claim support and merged citations. Render into a new file, then validate. Citations "
+                    "must be CWYW-produced ADDIN EN.CITE fields with a traveling library and an ADDIN "
+                    "EN.REFLIST bibliography; never type citation text by hand. Word and EndNote editing "
+                    "runs silently, and the library is read-only."
                 ),
             },
         )

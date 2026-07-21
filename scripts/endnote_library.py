@@ -38,9 +38,13 @@ import sys
 import tempfile
 import unicodedata
 import xml.etree.ElementTree as ElementTree
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
+from urllib import error as urlerror
+from urllib import parse as urlparse
+from urllib import request as urlrequest
 
 
 LOGGER = logging.getLogger("endnote_library")
@@ -94,6 +98,16 @@ AUTHOR_SPLIT_PATTERN = re.compile(r"[\r\n]+")
 WHITESPACE_PATTERN = re.compile(r"\s+")
 SURNAME_TRIM_CHARACTERS = " .,;"
 YEAR_TOKEN_PATTERN = re.compile(r"\b\d{4}\b")
+
+# --- DOI validation -------------------------------------------------------------------
+DOI_PATTERN = re.compile(r"^10\.\d{4,9}/[!-~]+$", re.IGNORECASE)
+DOI_PREFIX_PATTERN = re.compile(r"^(?:doi:\s*|https?://(?:dx\.)?doi\.org/)", re.IGNORECASE)
+DOI_RESOLVER_URL = "https://doi.org/"
+DOI_API_BASE_URL = "https://doi.org/api/handles/"
+DOI_API_BASE_ENVIRONMENT_VARIABLE = "ENDNOTE_DOI_API_BASE_URL"
+DOI_VERIFICATION_TIMEOUT_SECONDS = 10
+DOI_VERIFICATION_WORKERS = 8
+DOI_USER_AGENT = "endnote-for-word/1.1 DOI precheck"
 
 # --- manifest -------------------------------------------------------------------------
 MANIFEST_SCHEMA_VERSION = 1
@@ -202,6 +216,102 @@ def normalize_name(value: Any) -> str:
     decomposed = unicodedata.normalize("NFKD", _text(value))
     without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
     return _collapse_whitespace(without_marks).casefold().strip(SURNAME_TRIM_CHARACTERS)
+
+
+def normalize_doi(value: Any) -> str:
+    """Return a bare DOI, removing resolver URLs without ever duplicating their prefix."""
+    text = urlparse.unquote(_text(value))
+    while DOI_PREFIX_PATTERN.match(text):
+        text = DOI_PREFIX_PATTERN.sub("", text, count=1).strip()
+    if not text:
+        raise ValueError("A DOI is required.")
+    if not DOI_PATTERN.fullmatch(text):
+        raise ValueError(f"Invalid DOI syntax: {value!r}")
+    return text
+
+
+def canonical_doi_url(value: Any) -> str:
+    doi = normalize_doi(value)
+    encoded = urlparse.quote(doi, safe="/:._-;()")
+    return DOI_RESOLVER_URL + encoded
+
+
+def _doi_api_base_url() -> str:
+    configured = os.environ.get(DOI_API_BASE_ENVIRONMENT_VARIABLE, DOI_API_BASE_URL).strip()
+    parsed = urlparse.urlparse(configured)
+    loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    official = parsed.scheme == "https" and parsed.hostname == "doi.org"
+    if parsed.username or parsed.password or not (official or (parsed.scheme == "http" and loopback)):
+        raise ValueError(
+            f"{DOI_API_BASE_ENVIRONMENT_VARIABLE} must use the official HTTPS doi.org host, "
+            "except for a loopback test server."
+        )
+    return configured.rstrip("/") + "/"
+
+
+def verify_doi(value: Any) -> dict[str, Any]:
+    """Verify one DOI through the official DOI Proxy REST API."""
+    try:
+        doi = normalize_doi(value)
+        api_url = _doi_api_base_url() + urlparse.quote(doi, safe="/:._-;()")
+        request = urlrequest.Request(
+            api_url,
+            headers={"Accept": "application/json", "User-Agent": DOI_USER_AGENT},
+        )
+        with urlrequest.urlopen(request, timeout=DOI_VERIFICATION_TIMEOUT_SECONDS) as response:
+            response_host = urlparse.urlparse(response.geturl()).hostname
+            request_host = urlparse.urlparse(api_url).hostname
+            if response_host != request_host:
+                raise ValueError("The DOI Proxy redirected to an untrusted host.")
+            payload = json.load(response)
+        if not isinstance(payload, dict) or payload.get("responseCode") != 1:
+            if isinstance(payload, dict):
+                message = payload.get(
+                    "message", "DOI Proxy returned no successful handle record"
+                )
+            else:
+                message = "DOI Proxy returned a non-object response"
+            return {
+                "ok": False,
+                "doi": doi,
+                "doi_url": canonical_doi_url(doi),
+                "problem": "doi_not_resolvable",
+                "error": str(message),
+            }
+        return {
+            "ok": True,
+            "doi": doi,
+            "doi_url": canonical_doi_url(doi),
+            "api_url": api_url,
+        }
+    except ValueError as exc:
+        return {"ok": False, "problem": "invalid_doi", "error": str(exc)}
+    except urlerror.HTTPError as exc:
+        return {
+            "ok": False,
+            "problem": "doi_not_resolvable",
+            "error": f"DOI Proxy returned HTTP {exc.code}: {exc.reason}",
+        }
+    except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "problem": "doi_verification_failed",
+            "error": f"Could not verify the DOI through doi.org: {exc}",
+        }
+
+
+def verify_dois(values: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Verify unique DOI values concurrently and return results keyed case-insensitively."""
+    unique: dict[str, str] = {}
+    for value in values:
+        doi = normalize_doi(value)
+        unique[doi.casefold()] = doi
+    if not unique:
+        return {}
+    workers = min(DOI_VERIFICATION_WORKERS, len(unique))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="doi-verify") as executor:
+        results = executor.map(verify_doi, unique.values())
+    return {key: result for key, result in zip(unique, results)}
 
 
 def _failure(action: str, message: str, **extra: Any) -> dict[str, Any]:
@@ -333,6 +443,10 @@ def _public_record(raw: Mapping[str, Any]) -> dict[str, Any]:
     an agent's context for no benefit.
     """
     authors = split_authors(raw["author_block"])
+    try:
+        doi_url = canonical_doi_url(raw["doi"])
+    except ValueError:
+        doi_url = ""
     return {
         "rec_number": raw["rec_number"],
         "reference_type": _reference_type_number(raw["reference_type"]),
@@ -345,6 +459,7 @@ def _public_record(raw: Mapping[str, Any]) -> dict[str, Any]:
         "issue": raw["issue"],
         "pages": raw["pages"],
         "doi": raw["doi"],
+        "doi_url": doi_url,
         "url": raw["url"],
         "abstract_head": raw["abstract"][:ABSTRACT_HEAD_CHARACTERS],
     }
@@ -820,7 +935,6 @@ def _manifest_targets(manifest: Mapping[str, Any]) -> tuple[list[dict[str, Any]]
     """Flatten manifest citations into targets, collecting structural problems as it goes."""
     targets: list[dict[str, Any]] = []
     problems: list[dict[str, Any]] = []
-
     schema_version = manifest.get("schema_version")
     if schema_version != MANIFEST_SCHEMA_VERSION:
         problems.append(
@@ -884,6 +998,198 @@ def _year_matches(expected: Any, actual: str) -> bool:
     return expected_text in YEAR_TOKEN_PATTERN.findall(actual_text)
 
 
+def _prepare_precheck(
+    library: str | os.PathLike[str] | None, manifest: Any
+) -> tuple[Path, Path, str, list[dict[str, Any]], list[dict[str, Any]], dict[int, dict[str, Any]]]:
+    document = _load_json_document(manifest, "manifest")
+    if not isinstance(document, dict):
+        raise ValueError("The manifest must be a JSON object.")
+    effective_library = _clean_argument(library)
+    if effective_library is None:
+        declared = document.get("library")
+        if isinstance(declared, dict):
+            effective_library = _clean_argument(declared.get("path"))
+    if effective_library is None:
+        raise ValueError("No library path supplied and the manifest does not declare library.path.")
+
+    library_path, source, library_format = _resolve_library(effective_library)
+    targets, problems = _manifest_targets(document)
+    rec_numbers: list[int] = []
+    for entry in targets:
+        try:
+            rec_numbers.append(_coerce_rec_number(entry["target"].get("rec_number"), "rec_number"))
+        except ValueError:
+            continue
+    records = _fetch_records(source, library_format, rec_numbers, include_trashed=True)
+    return library_path, source, library_format, targets, problems, records
+
+
+def _resolve_precheck_record(
+    entry: dict[str, Any],
+    records: Mapping[int, dict[str, Any]],
+    library_path: Path,
+    problems: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any], int, dict[str, Any]] | None:
+    target = entry["target"]
+    where = {
+        "citation_id": entry["citation_id"],
+        "target_index": entry["target_index"],
+        "rec_number": target.get("rec_number"),
+    }
+    try:
+        rec_number = _coerce_rec_number(target.get("rec_number"), "rec_number")
+    except ValueError as exc:
+        problems.append(_problem("invalid_rec_number", str(exc), **where))
+        return None
+    raw = records.get(rec_number)
+    if raw is None:
+        problems.append(
+            _problem("record_not_found", f"Record {rec_number} does not exist in {library_path}.", **where)
+        )
+        return None
+    if raw["trash_state"] != LIVE_TRASH_STATE:
+        problems.append(_problem("record_in_trash", f"Record {rec_number} is in the library trash.", **where))
+        return None
+    return where, target, rec_number, raw
+
+
+def _check_target_identity(
+    target: Mapping[str, Any],
+    raw: Mapping[str, Any],
+    rec_number: int,
+    where: Mapping[str, Any],
+    problems: list[dict[str, Any]],
+) -> str:
+    authors = split_authors(raw["author_block"])
+    actual_surname = author_surname(authors[0]) if authors else ""
+    expected_author = _text(target.get("author"))
+    if not expected_author:
+        problems.append(_problem("missing_author", "The target has no author surname.", **where))
+    elif normalize_name(expected_author) != normalize_name(actual_surname):
+        problems.append(
+            _problem(
+                "author_mismatch",
+                f"Record {rec_number} has first author surname '{actual_surname}', "
+                f"the manifest says '{expected_author}'.",
+                expected=expected_author,
+                actual=actual_surname,
+                **where,
+            )
+        )
+    expected_year = target.get("year")
+    if _text(expected_year) == "":
+        problems.append(_problem("missing_year", "The target has no year.", **where))
+    elif not _year_matches(expected_year, raw["year"]):
+        problems.append(
+            _problem(
+                "year_mismatch",
+                f"Record {rec_number} has year '{raw['year']}', "
+                f"the manifest says '{_text(expected_year)}'.",
+                expected=_text(expected_year),
+                actual=raw["year"],
+                **where,
+            )
+        )
+    return actual_surname
+
+
+def _precheck_doi_value(
+    value: Any,
+    location: str,
+    where: Mapping[str, Any],
+    problems: list[dict[str, Any]],
+) -> str | None:
+    raw_value = _text(value)
+    try:
+        doi = normalize_doi(value)
+    except ValueError as exc:
+        missing = "missing_doi" if location == "manifest" else "library_missing_doi"
+        invalid = "invalid_doi" if location == "manifest" else "library_invalid_doi"
+        problems.append(_problem(missing if not raw_value else invalid, str(exc), actual=value, **where))
+        return None
+    if raw_value == doi:
+        return doi
+    kind = "manifest_doi_not_canonical" if location == "manifest" else "library_doi_not_canonical"
+    message = (
+        "The manifest DOI must contain only the bare DOI without 'doi:' or a resolver URL."
+        if location == "manifest"
+        else "The EndNote DOI field must contain only the bare DOI. Remove any 'doi:' or "
+        "'https://doi.org/' prefix so the output style cannot duplicate it."
+    )
+    problems.append(_problem(kind, message, expected=doi, actual=value, **where))
+    return None
+
+
+def _check_target_doi(
+    target: Mapping[str, Any],
+    raw: Mapping[str, Any],
+    rec_number: int,
+    where: Mapping[str, Any],
+    problems: list[dict[str, Any]],
+) -> str | None:
+    expected_doi = _precheck_doi_value(target.get("doi"), "manifest", where, problems)
+    actual_doi = _precheck_doi_value(raw["doi"], "library", where, problems)
+    if (
+        expected_doi is not None
+        and actual_doi is not None
+        and expected_doi.casefold() != actual_doi.casefold()
+    ):
+        problems.append(
+            _problem(
+                "doi_mismatch",
+                f"Record {rec_number} has DOI '{actual_doi}', the manifest says '{expected_doi}'.",
+                expected=expected_doi,
+                actual=actual_doi,
+                **where,
+            )
+        )
+        return None
+    return actual_doi
+
+
+def _verify_precheck_dois(
+    doi_checks: list[tuple[dict[str, Any], dict[str, Any], str]],
+    problems: list[dict[str, Any]],
+) -> None:
+    verification_results = verify_dois(doi for _, _, doi in doi_checks)
+    for where, resolved_entry, doi in doi_checks:
+        verification = verification_results[doi.casefold()]
+        if verification["ok"]:
+            resolved_entry["doi_verified"] = True
+            continue
+        problems.append(
+            _problem(
+                verification["problem"],
+                verification["error"],
+                expected=doi,
+                actual=doi,
+                doi_url=canonical_doi_url(doi),
+                **where,
+            )
+        )
+
+
+def _precheck_result(
+    library_path: Path,
+    library_format: str,
+    targets: list[dict[str, Any]],
+    resolved: list[dict[str, Any]],
+    problems: list[dict[str, Any]],
+) -> dict[str, Any]:
+    ok = not problems
+    if not ok:
+        LOGGER.error("precheck found %d problem(s) in the manifest", len(problems))
+    return {
+        "ok": ok,
+        "action": "precheck",
+        "library": str(library_path),
+        "library_format": library_format,
+        "checked": len(targets),
+        "resolved": resolved,
+        "problems": problems,
+    }
+
+
 def precheck_manifest(
     library: str | os.PathLike[str] | None, manifest: Any
 ) -> dict[str, Any]:
@@ -895,29 +1201,9 @@ def precheck_manifest(
     action = "precheck"
     source: Path | None = None
     try:
-        document = _load_json_document(manifest, "manifest")
-        if not isinstance(document, dict):
-            raise ValueError("The manifest must be a JSON object.")
-        effective_library = _clean_argument(library)
-        if effective_library is None:
-            declared = document.get("library")
-            if isinstance(declared, dict):
-                effective_library = _clean_argument(declared.get("path"))
-        if effective_library is None:
-            raise ValueError(
-                "No library path supplied and the manifest does not declare library.path."
-            )
-        library_path, source, library_format = _resolve_library(effective_library)
-        targets, problems = _manifest_targets(document)
-
-        rec_numbers: list[int] = []
-        for entry in targets:
-            try:
-                rec_numbers.append(_coerce_rec_number(entry["target"].get("rec_number"), "rec_number"))
-            except ValueError:
-                # Reported per target below; the lookup simply skips it.
-                continue
-        records = _fetch_records(source, library_format, rec_numbers, include_trashed=True)
+        library_path, source, library_format, targets, problems, records = _prepare_precheck(
+            library, manifest
+        )
     except (FileNotFoundError, ValueError) as exc:
         return _failure(action, str(exc))
     except sqlite3.Error as exc:
@@ -928,97 +1214,32 @@ def precheck_manifest(
         return _failure(action, f"Could not read the library: {exc}")
 
     resolved: list[dict[str, Any]] = []
+    doi_checks: list[tuple[dict[str, Any], dict[str, Any], str]] = []
     for entry in targets:
-        citation_id = entry["citation_id"]
-        target_index = entry["target_index"]
-        target = entry["target"]
-        where = {
-            "citation_id": citation_id,
-            "target_index": target_index,
-            "rec_number": target.get("rec_number"),
+        record = _resolve_precheck_record(entry, records, library_path, problems)
+        if record is None:
+            continue
+        where, target, rec_number, raw = record
+        actual_surname = _check_target_identity(target, raw, rec_number, where, problems)
+        actual_doi = _check_target_doi(target, raw, rec_number, where, problems)
+        resolved_entry = {
+            "citation_id": entry["citation_id"],
+            "target_index": entry["target_index"],
+            "rec_number": rec_number,
+            "first_author_surname": actual_surname,
+            "year": raw["year"],
+            "title": raw["title"],
+            "doi": actual_doi or "",
+            "doi_url": canonical_doi_url(actual_doi) if actual_doi else "",
+            "doi_verified": False,
         }
+        resolved.append(resolved_entry)
+        if actual_doi is not None:
+            doi_checks.append((where, resolved_entry, actual_doi))
 
-        try:
-            rec_number = _coerce_rec_number(target.get("rec_number"), "rec_number")
-        except ValueError as exc:
-            problems.append(_problem("invalid_rec_number", str(exc), **where))
-            continue
+    _verify_precheck_dois(doi_checks, problems)
 
-        raw = records.get(rec_number)
-        if raw is None:
-            problems.append(
-                _problem(
-                    "record_not_found",
-                    f"Record {rec_number} does not exist in {library_path}.",
-                    **where,
-                )
-            )
-            continue
-        if raw["trash_state"] != LIVE_TRASH_STATE:
-            problems.append(
-                _problem(
-                    "record_in_trash", f"Record {rec_number} is in the library trash.", **where
-                )
-            )
-            continue
-
-        authors = split_authors(raw["author_block"])
-        actual_surname = author_surname(authors[0]) if authors else ""
-        expected_author = _text(target.get("author"))
-        if not expected_author:
-            problems.append(
-                _problem("missing_author", "The target has no author surname.", **where)
-            )
-        elif normalize_name(expected_author) != normalize_name(actual_surname):
-            problems.append(
-                _problem(
-                    "author_mismatch",
-                    f"Record {rec_number} has first author surname '{actual_surname}', "
-                    f"the manifest says '{expected_author}'.",
-                    expected=expected_author,
-                    actual=actual_surname,
-                    **where,
-                )
-            )
-
-        expected_year = target.get("year")
-        if _text(expected_year) == "":
-            problems.append(_problem("missing_year", "The target has no year.", **where))
-        elif not _year_matches(expected_year, raw["year"]):
-            problems.append(
-                _problem(
-                    "year_mismatch",
-                    f"Record {rec_number} has year '{raw['year']}', "
-                    f"the manifest says '{_text(expected_year)}'.",
-                    expected=_text(expected_year),
-                    actual=raw["year"],
-                    **where,
-                )
-            )
-
-        resolved.append(
-            {
-                "citation_id": citation_id,
-                "target_index": target_index,
-                "rec_number": rec_number,
-                "first_author_surname": actual_surname,
-                "year": raw["year"],
-                "title": raw["title"],
-            }
-        )
-
-    ok = not problems
-    if not ok:
-        LOGGER.error("precheck found %d problem(s) in the manifest", len(problems))
-    return {
-        "ok": ok,
-        "action": action,
-        "library": str(library_path),
-        "library_format": library_format,
-        "checked": len(targets),
-        "resolved": resolved,
-        "problems": problems,
-    }
+    return _precheck_result(library_path, library_format, targets, resolved, problems)
 
 
 # ======================================================================================
@@ -1068,6 +1289,10 @@ def _ris_record_lines(reference: Mapping[str, Any], index: int) -> list[str]:
         raise ValueError(
             f"references[{index}] has neither a title nor authors, which cannot be imported."
         )
+    try:
+        doi = normalize_doi(reference.get("doi"))
+    except ValueError as exc:
+        raise ValueError(f"references[{index}].doi: {exc}") from exc
 
     lines = [f"TY{RIS_TAG_SEPARATOR}{_ris_type_code(reference.get('type'))}"]
     lines.extend(f"AU{RIS_TAG_SEPARATOR}{author}" for author in authors)
@@ -1078,13 +1303,15 @@ def _ris_record_lines(reference: Mapping[str, Any], index: int) -> list[str]:
         ("VL", "volume"),
         ("IS", "issue"),
         ("PB", "publisher"),
-        ("DO", "doi"),
-        ("UR", "url"),
         ("AB", "abstract"),
     ):
         value = _ris_value(reference.get(key))
         if value:
             lines.append(f"{tag}{RIS_TAG_SEPARATOR}{value}")
+    lines.append(f"DO{RIS_TAG_SEPARATOR}{doi}")
+    url = _ris_value(reference.get("url"))
+    if url:
+        lines.append(f"UR{RIS_TAG_SEPARATOR}{url}")
     pages = _ris_value(reference.get("pages"))
     if pages:
         match = RIS_PAGE_RANGE_PATTERN.match(pages)
@@ -1098,13 +1325,26 @@ def _ris_record_lines(reference: Mapping[str, Any], index: int) -> list[str]:
     return lines
 
 
-def export_ris(output: str | os.PathLike[str], references: Any) -> dict[str, Any]:
-    """Write a UTF-8 RIS file that EndNote can import.
+def _ris_output_path(output: str | os.PathLike[str]) -> Path:
+    output_text = _clean_argument(output)
+    if output_text is None:
+        raise ValueError("An output path is required.")
+    output_path = Path(output_text).expanduser()
+    if output_path.is_dir():
+        raise ValueError(f"The output path is a directory: {output_path}")
+    return output_path
 
-    Args:
-        output: destination ``.ris`` path; parent directories are created.
-        references: a list of reference objects, or a path to a JSON file holding one.
-    """
+
+def _ris_payload(document: list[dict[str, Any]]) -> bytes:
+    blocks: list[str] = []
+    for index, reference in enumerate(document):
+        lines = _ris_record_lines(reference, index)
+        blocks.append(RIS_LINE_ENDING.join(lines) + RIS_LINE_ENDING)
+    return RIS_LINE_ENDING.join(blocks).encode("utf-8")
+
+
+def export_ris(output: str | os.PathLike[str], references: Any) -> dict[str, Any]:
+    """Write a UTF-8 RIS file that EndNote can import."""
     action = "export-ris"
     try:
         document = _load_json_document(references, "references document")
@@ -1116,18 +1356,8 @@ def export_ris(output: str | os.PathLike[str], references: Any) -> dict[str, Any
             if not isinstance(reference, dict):
                 raise ValueError(f"references[{index}] must be an object.")
 
-        output_text = _clean_argument(output)
-        if output_text is None:
-            raise ValueError("An output path is required.")
-        output_path = Path(output_text).expanduser()
-        if output_path.is_dir():
-            raise ValueError(f"The output path is a directory: {output_path}")
-
-        blocks: list[str] = []
-        for index, reference in enumerate(document):
-            lines = _ris_record_lines(reference, index)
-            blocks.append(RIS_LINE_ENDING.join(lines) + RIS_LINE_ENDING)
-        payload = RIS_LINE_ENDING.join(blocks).encode("utf-8")
+        output_path = _ris_output_path(output)
+        payload = _ris_payload(document)
 
         parent = output_path.parent
         if str(parent):

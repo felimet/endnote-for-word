@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 PACKAGE_NAME = "endnote-for-word"
-RELEASE_VERSION = "1.0.0"
+RELEASE_VERSION = "1.1.0"
 RELEASE_AUTHOR = "Jia-Ming Zhou (Felimet)"
 SKILL_DIRECTORY = ROOT / "skills" / PACKAGE_NAME
 SKILL_PATH = SKILL_DIRECTORY / "SKILL.md"
@@ -50,9 +50,14 @@ REQUIRED_BRIDGE_FUNCTIONS = (
     "Release-ComObject",
     "Start-Word",
     "Stop-Word",
+    "Get-AgentDefaults",
+    "Get-DefaultOutputStyle",
     "Read-Manifest",
     "Assert-Manifest",
+    "Invoke-ManifestPrecheck",
     "Get-TemporaryCitationText",
+    "Get-CitationMarkerPlans",
+    "Set-CitationDisplayFormats",
     "Find-UniqueMarkerRange",
     "Get-InstalledStyles",
     "Resolve-StyleName",
@@ -277,8 +282,7 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(data["schema_version"], 1)
 
         style = data["style"]["default_output_style"]
-        self.assertIsInstance(style, str)
-        self.assertTrue(style.strip())
+        self.assertEqual(style, "IEEE")
 
         temporary = data["temporary_citation"]
         self.assertEqual(temporary["open"], "{")
@@ -292,14 +296,22 @@ class DefaultsTests(unittest.TestCase):
             "reject_residual_temporary_citations",
             "require_native_en_cite_fields",
             "require_native_reflist_field",
+            "require_visible_verified_doi_links",
+            "reject_duplicate_doi_resolver_prefixes",
         ):
             with self.subTest(gate=gate):
                 self.assertTrue(validation[gate])
+
+        self.assertTrue(data["formatting"]["silent_word_and_endnote"])
+        self.assertTrue(data["doi"]["required"])
+        self.assertTrue(data["doi"]["verify_before_citing"])
+        self.assertEqual(data["doi"]["bibliography_prefix"], "doi: https://doi.org/")
 
     def test_bridge_publishes_defaults_to_the_documented_location(self) -> None:
         text = BRIDGE_PATH.read_text(encoding="utf-8")
         self.assertIn("EndNoteForWordAgent", text)
         self.assertIn("defaults.json", text)
+        self.assertIn("Get-DefaultOutputStyle", text)
 
 
 class BridgeContractTests(unittest.TestCase):
@@ -342,6 +354,11 @@ class BridgeContractTests(unittest.TestCase):
         ):
             with self.subTest(macro=macro):
                 self.assertNotRegex(text, rf"Run\(\s*'{macro}'")
+
+    def test_bridge_keeps_office_automation_hidden(self) -> None:
+        text = BRIDGE_PATH.read_text(encoding="utf-8")
+        self.assertIn("$script:Word.Visible = $false", text)
+        self.assertRegex(text, r"Start-Process[^\r\n]+-WindowStyle Hidden")
 
 
 class PowerShellCompatibilityTests(unittest.TestCase):
@@ -438,6 +455,7 @@ class ManifestFixtureTests(unittest.TestCase):
                 self.assertEqual(manifest["schema_version"], 1)
                 self.assertTrue(manifest["library"]["path"])
                 self.assertTrue(manifest["style"])
+                self.assertEqual(manifest["style"], "IEEE")
                 self.assertIn("expected", manifest["bibliography"])
 
                 identifiers = set()
@@ -450,11 +468,16 @@ class ManifestFixtureTests(unittest.TestCase):
                     identifiers.add(citation["id"])
                     markers.add(citation["marker"])
                     self.assertTrue(citation["targets"])
+                    self.assertIn(citation.get("display", "default"), {"default", "author-year"})
                     for target in citation["targets"]:
                         self.assertIsInstance(target["rec_number"], int)
                         self.assertGreater(target["rec_number"], 0)
                         self.assertTrue(target["author"])
                         self.assertIsInstance(target["year"], int)
+                        self.assertRegex(target["doi"], r"(?i)^10\.\d{4,9}/[!-~]+$")
+                        self.assertNotIn("https://doi.org/", target["doi"].lower())
+                    if citation.get("display") == "author-year":
+                        self.assertEqual(len(citation["targets"]), 1)
                     self.assertNotIn("prefix", citation, "v1 rejects citation prefixes")
                     if "pages" in citation:
                         self.assertRegex(citation["pages"], r"^[0-9]+(\s*-\s*[0-9]+)?$")
@@ -475,6 +498,14 @@ class ManifestFixtureTests(unittest.TestCase):
         citations = manifest["citations"]
         self.assertTrue(any(len(entry["targets"]) > 1 for entry in citations), "no merged citation")
         self.assertTrue(any("pages" in entry for entry in citations), "no cited-pages citation")
+        self.assertTrue(
+            any(entry.get("display") == "author-year" for entry in citations),
+            "no Author (Year) citation",
+        )
+        self.assertTrue(
+            any(entry.get("display") == "default" for entry in citations),
+            "no default-format citation",
+        )
         self.assertTrue(
             any(len(entry["targets"]) == 1 and "pages" not in entry for entry in citations),
             "no plain single citation",

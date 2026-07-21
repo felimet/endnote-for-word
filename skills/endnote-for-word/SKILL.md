@@ -1,10 +1,10 @@
 ---
 name: endnote-for-word
-description: "Insert, format, update, restyle, inspect, or validate EndNote citations and bibliographies in Microsoft Word DOCX using genuine EndNote 21 Cite While You Write (CWYW) automation. Use for EndNote citation insertion, ADDIN EN.CITE field codes with traveling library payloads, ADDIN EN.REFLIST reference lists, rec-number lookups inside an .enl library, output styles such as APA 7th, IEEE, Chicago, Vancouver, Nature or Harvard, programmatic style switching through the EN.Layout document variable, temporary citation syntax such as {Author, 2023 #1}, merged citations, cited pages, unformatting citations, removing field codes, RIS reference import files, and repairs that must avoid typed citation text, fabricated field codes, or fake plain-text bibliographies."
+description: "Insert, format, update, restyle, inspect, or validate EndNote citations and bibliographies in Microsoft Word DOCX using genuine EndNote Cite While You Write (CWYW) automation. Use for IEEE citations, DOI-required bibliographies, visible https://doi.org links, Default Format [x], Display as Author (Year) forms such as Author et al. [x], silent Word and EndNote automation, ADDIN EN.CITE fields with traveling library payloads, ADDIN EN.REFLIST reference lists, rec-number lookups inside an .enl library, output-style switching, merged citations, cited pages, RIS imports, and repairs that must avoid typed citation text, fabricated field codes, or fake plain-text bibliographies."
 license: MIT
 metadata:
   author: Jia-Ming Zhou (Felimet)
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 # EndNote for Word
@@ -16,12 +16,15 @@ Create real EndNote citations and a real bibliography in DOCX by driving EndNote
 - Citations must be CWYW-produced `ADDIN EN.CITE` fields carrying a traveling library payload, and the bibliography must be an `ADDIN EN.REFLIST` field. Nothing else counts as a citation.
 - Never type citation text, never fabricate field codes in OOXML, and never pass off a plain-text bibliography as a real one. A hand-written `(Author, 2023)` or a typed reference list is a failed deliverable, not a fallback.
 - The library is read-only. Every `rec_number` must come from `search_endnote_library` and must pass `precheck_endnote_manifest` before rendering. Never guess a rec-number from a PDF, a DOI, or memory.
+- IEEE is the default output style. Every cited target must have a bare DOI such as `10.1109/5.771073`, and `precheck_endnote_manifest` must successfully resolve it through `https://doi.org/` before citation.
+- The visible bibliography form is exactly `doi: https://doi.org/<DOI>`. Reject missing DOI links and duplicated resolver prefixes such as `https://doi.org/https://doi.org/...`.
 - The output style must be verified with `list_endnote_styles` first. An unknown style name makes EndNote open a modal dialog and hangs the run, and no `DisplayAlerts` setting suppresses it.
 - v1 does not support citation prefixes or excluded authors. The backslash forms `{see \Author, 2023 #1}` and `{\Author, 2023 #1}` open modal dialogs, so `Assert-Manifest` rejects a `prefix` key outright.
 - Source DOCX is user data. Default to writing a new output file, and only reuse the input path when the user asks for it and `-Overwrite` is supplied.
 - A rec-number that does not exist in the target library triggers the blocking "select matching reference" dialog. The pre-check exists to make that impossible, so never skip it to save a step.
 - A merged citation such as `{A, 2023 #1; B, 2020 #2}` is one field, not two. Count citations as `count(codes starting with "ADDIN EN.CITE") - count(codes starting with "ADDIN EN.CITE.DATA")`, because a large traveling library payload is moved into a nested `ADDIN EN.CITE.DATA` field.
-- Only the non-interactive CWYW macros are callable. `ENFormatBibliography` and `ENUnformatCitations` were measured to return cleanly. Every `*Dlg` macro opens a modal dialog and must never be invoked. `ENRemoveFieldCodes` also raises a modal confirmation dialog and never returns under automation, so converting to plain text stays a manual ribbon operation. `ENToggleInstantFormatting` toggles blindly with no read-back and is not used in v1.
+- Only the measured non-interactive CWYW macros are callable. `ENFormatBibliography`, `ENAuthorYearFormat`, and `ENUnformatCitations` are allowed. Every `*Dlg` macro opens a modal dialog and must never be invoked. `ENRemoveFieldCodes` also raises a modal confirmation dialog and never returns under automation, so converting to plain text stays a manual ribbon operation. `ENToggleInstantFormatting` toggles blindly with no read-back and is not used.
+- Word is always created with `Visible = false`; an EndNote process started by the bridge uses a hidden window. Never surface either application during Agent editing.
 - Never call `Application.AddIns.Add` on the CWYW template. `EndNote Cwyw.dotm` auto-loads as a global template as soon as a document is open, and adding it again double-loads it.
 - `COMAddIns("EndNote.WordAddin.Connect").Object` returns null on this platform. `Application.Run('<macro>')` is the only working entry point.
 
@@ -40,10 +43,10 @@ Create real EndNote citations and a real bibliography in DOCX by driving EndNote
 1. Preserve the input DOCX and choose an explicit output path. Reject anything that is not `.docx`.
 2. Call `probe_endnote_word`. Pass `library_path` when the library is already known so the three `library_*` checks are filled in. Stop on a failed prerequisite and report the exact failed check. Exit code 2 means the environment is not ready, not that the document is wrong.
 3. Call `list_endnote_styles` and resolve the requested output style to an installed `.ens` name before anything else touches Word. If the user named a style that does not resolve, present the nearest matches and ask; do not substitute a style silently.
-4. Scan the complete document twice. First pass inventories every place that needs a citation and every existing citation already present. Second pass classifies each place as a single citation or a merged citation, decides whether cited pages or a suffix are needed, and assigns one stable id and one unique marker per citation. Never start writing a manifest during the first pass.
-5. For every citation, call `search_endnote_library` to find candidate records and `get_endnote_reference` to confirm the exact record. The `rec_number` written into the manifest must be the `rec_number` returned by the library reader, and the `author` must be that record's `first_author_surname`.
+4. Scan the complete document twice. First pass inventories every place that needs a citation and every existing citation already present. Second pass classifies each place as a single citation or a merged citation, chooses `display`, decides whether cited pages or a suffix are needed, and assigns one stable id and one unique marker per citation. Never start writing a manifest during the first pass.
+5. For every citation, call `search_endnote_library` to find candidate records and `get_endnote_reference` to confirm the exact record. Copy its `rec_number`, `first_author_surname`, year, and bare DOI into the target. A missing DOI makes the record ineligible.
 6. Build a schema v1 JSON manifest. Read [workflow-and-schema.md](references/workflow-and-schema.md) for the exact contract and worked examples, and [temporary-citations.md](references/temporary-citations.md) for the supported temporary citation grammar.
-7. Call `precheck_endnote_manifest`. It verifies every target against the library offline, before Word is ever opened. Fix every reported problem and re-run it; the pre-check reports all mismatches at once, so do not iterate one at a time.
+7. Call `precheck_endnote_manifest`. It verifies every target against the library and verifies each DOI online through doi.org before Word is opened. Fix every reported problem and re-run it; the pre-check reports all mismatches at once.
 8. Call `render_endnote_word_document`. Do not edit the same DOCX in Word while the render runs, and do not run two render jobs concurrently in the same Windows profile.
 9. Call `validate_endnote_word_document` with the same manifest. A render is incomplete until validation returns `ok: true`. An output file that exists but fails validation is a diagnostic artifact, not a deliverable.
 10. Report the output path, the citation and target counts, the resolved style, whether the bibliography is present, whether EndNote was already running before the run (`endnote_preexisting`), the validation result, and any limitation that applies.
@@ -56,7 +59,7 @@ Use the bundled local MCP server when available:
 - `list_endnote_styles`: read-only enumeration of installed and personal `.ens` output styles, with an optional case-insensitive filter.
 - `search_endnote_library`: read-only search over the library across author, title, journal, DOI, keywords, and abstract.
 - `get_endnote_reference`: read-only fetch of one record by rec-number.
-- `precheck_endnote_manifest`: read-only offline verification that every manifest target exists, is not in the trash, and matches on first-author surname and year.
+- `precheck_endnote_manifest`: read-only library verification plus online doi.org verification for every bare DOI.
 - `configure_endnote_defaults`: persist the packaged default profile. Invoke only when the user asks to configure defaults or during an explicitly requested installation. It does not touch EndNote's own preferences.
 - `render_endnote_word_document`: marker-driven insertion of temporary citations followed by CWYW formatting.
 - `validate_endnote_word_document`: read-only structural validation against the gates below.
@@ -86,7 +89,10 @@ python scripts\endnote_library.py precheck --library $library --manifest $manife
 - Use stable ASCII ids such as `thomsen2023` or `merged_welfare`. An id matches `^[A-Za-z][A-Za-z0-9_-]*$` and is globally unique.
 - Use collision-resistant visible markers such as `{{CITE:thomsen2023}}`. Each marker must occur exactly once in the document. Never reuse a marker.
 - One `citations[]` entry with several `targets[]` is a merged citation and renders as one field. Do not emit two adjacent citations when the user wants one merged parenthesis.
-- Each target needs an integer `rec_number` greater than zero, a non-empty `author` surname, and an integer `year`. All three are checked offline before Word opens.
+- Each target needs an integer `rec_number` greater than zero, a non-empty `author` surname, an integer `year`, and a bare `doi`. The DOI field must not contain `doi:` or a resolver URL.
+- Set `display` to `author-year` only when the citation itself is a grammatical subject or named actor, for example `{{CITE:smith}} demonstrated ...`, which IEEE renders as `Smith et al. [1] demonstrated ...`. The marker replaces the author phrase; do not write `Smith {{CITE:smith}}` or the name will be duplicated.
+- Set `display` to `default` when the reference supports a claim, normally at the clause or sentence boundary, for example `The method is stable {{CITE:smith}}`, which IEEE renders as `The method is stable [1]`.
+- Merged citations always use `display: default`. `author-year` requires exactly one target. When the prose is ambiguous, rewrite the sentence so the grammatical role is explicit before choosing.
 - `pages` supplies EndNote cited pages and must match `^[0-9]+(\s*-\s*[0-9]+)?$`. It renders as `@45-46` inside the temporary citation.
 - `suffix` supplies free text after the citation, such as `, p. 99`.
 - `pages` and `suffix` bind to the last target only in EndNote semantics, so the manifest may only carry them when `targets` has exactly one entry. `Assert-Manifest` enforces that.
@@ -97,9 +103,11 @@ python scripts\endnote_library.py precheck --library $library --manifest $manife
 
 ## Style policy
 
+- Use `IEEE` unless the user explicitly requests another installed style.
+- The custom IEEE bibliography templates must print `doi: https://doi.org/DOI`; the DOI field itself stays bare. Never add a resolver prefix to an already prefixed DOI value.
 - The document's output style lives in a Word document variable named `EN.Layout` holding an `<ENLayout>` XML fragment. The bridge reads it, replaces the `<Style>` element, and re-runs `ENFormatBibliography`. No dialog is involved.
 - Always resolve the style name against the installed `.ens` files first. `list_endnote_styles` is the authority, not the user's spelling and not a remembered style list.
-- Switching style rewrites both the in-text citations and the whole bibliography. Going from an author-date style to `IEEE` turns `(Thomsen, Shearer et al. 2023)` into `[1]` and rebuilds the reference list.
+- Switching style rewrites both the in-text citations and the whole bibliography. Under IEEE, `display: default` yields `[1]`; `display: author-year` invokes EndNote's `ENAuthorYearFormat` and yields a form such as `Thomsen et al. [1]`.
 - Use `set_endnote_citation_style` on an already formatted document rather than re-rendering from the source. Re-rendering repeats the marker work for no gain.
 - A second document variable named `EN.Libraries` records which library and which record ids were used. Do not edit it by hand; it is the provenance evidence used by validation gate 8.
 - Both variables persist in `word/settings.xml` as `w:docVar` entries, so the style and the record ids are also readable offline without Word.
@@ -124,10 +132,12 @@ Treat any of these as a failed deliverable. `validate` returns `ok: false` and e
 2. Any residual temporary citation text, matched by `\{[^{}]*#\d+[^{}]*\}` over the document text. Leftover braces mean CWYW did not format that citation.
 3. A native citation field count, computed with the counting rule above, that does not equal the manifest citation count. Without a manifest the count must still be at least 1.
 4. When `bibliography.expected` is true, anything other than exactly one `ADDIN EN.REFLIST` field whose result text is non-empty after trimming.
-5. A manifest `rec_number` that does not appear as `<rec-number>N</rec-number>` in some EN.CITE traveling library XML together with that target's author surname. When the payload moved into a nested `ADDIN EN.CITE.DATA` field, match against that nested field's own code text.
-6. `Error!`, `Reference source not found`, `{Citation}`, or `{Bibliography}` placeholder strings in the document text.
-7. A missing `EN.Layout` document variable, or a style in it that does not match the manifest style case-insensitively.
-8. A missing `EN.Libraries` document variable, or one whose `<record-ids>` does not contain every manifest `rec_number`.
+5. Any cited DOI missing from the bibliography's visible `doi: https://doi.org/<DOI>` text, or any duplicated DOI resolver prefix.
+6. A manifest `rec_number` that does not appear as `<rec-number>N</rec-number>` in some EN.CITE traveling library XML together with that target's author surname. When the payload moved into a nested `ADDIN EN.CITE.DATA` field, match against that nested field's own code text.
+7. An `author-year` citation whose native field result does not visibly contain its author surname.
+8. `Error!`, `Reference source not found`, `{Citation}`, or `{Bibliography}` placeholder strings in the document text.
+9. A missing `EN.Layout` document variable, or a style in it that does not match the manifest style case-insensitively.
+10. A missing `EN.Libraries` document variable, or one whose `<record-ids>` does not contain every manifest `rec_number`.
 
 `HYPERLINK` fields inside the bibliography are DOI links, not citations. Never count them as citations and never treat their presence or absence as a failure.
 

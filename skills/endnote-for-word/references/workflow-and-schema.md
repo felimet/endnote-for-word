@@ -23,7 +23,9 @@ dialog and blocks the run.
    hard and report the nearest matches. An unknown style name makes EndNote open a modal
    dialog, which hangs the automation permanently.
 4. Verify the library file exists together with its sibling `.Data` directory.
-5. `Start-EndNoteWithLibrary`. When no `EndNote` process owns a main window, start the
+5. Run the read-only manifest precheck. Every target must match its library record, its DOI
+   field must be bare, and the DOI must resolve through the official doi.org Proxy API.
+6. `Start-EndNoteWithLibrary`. When no `EndNote` process owns a main window, start the
    EndNote executable with the library path and poll every 250 ms until a process reports
    `MainWindowHandle -ne 0`. When EndNote is already running, do not start a second
    instance and do not force it to switch libraries; the result records
@@ -33,16 +35,19 @@ dialog and blocks the run.
    library-local, so the wrong library silently resolves the wrong records. When the bridge
    observes an EndNote process that did not exist before the call, it records
    `endnote_autostarted: true`.
-6. `Start-Word` on a copy of the input written to the output temporary path. The input is
-   never opened for writing.
-7. Set the `EN.Layout` document variable to the requested style. The variable is created
+   Any EndNote process started here uses a hidden window.
+7. `Start-Word` invisibly on a copy of the input written to the output temporary path. The
+   input is never opened for writing.
+8. Set the `EN.Layout` document variable to the requested style. The variable is created
    when missing, otherwise only its `<Style>` element is replaced.
-8. For each citation, `Find-UniqueMarkerRange` locates the marker and the range text is set
+9. For each citation, `Find-UniqueMarkerRange` locates the marker and the range text is set
    to the generated temporary citation string.
-9. `Invoke-CwywFormat` calls `ENFormatBibliography` through `Application.Run`.
-10. Poll until the EN.CITE field count reaches the expected value or the automation timeout
+10. `Invoke-CwywFormat` calls `ENFormatBibliography` through `Application.Run`.
+11. For each `display: author-year` entry, select its native field by document order and
+    call `ENAuthorYearFormat`. Under IEEE this produces a form such as `Author et al. [1]`.
+12. Poll until the EN.CITE field count reaches the expected value or the automation timeout
     expires.
-11. Save atomically: `SaveAs2` to a `.<name>.<guid>.tmp.docx` sibling, stop Word, then move
+13. Save atomically: `SaveAs2` to a `.<name>.<guid>.tmp.docx` sibling, stop Word, then move
     the temporary file onto the output path.
 
 Source documents and libraries are user data. The bridge never writes to `InputPath`
@@ -54,12 +59,13 @@ unless `-Overwrite` is supplied, and never writes to the library at all.
 {
   "schema_version": 1,
   "library": { "path": "C:\\Users\\<you>\\Documents\\ProjectLibrary.enl" },
-  "style": "APA 7th",
+  "style": "IEEE",
   "citations": [
     {
       "id": "thomsen2023",
       "marker": "{{CITE:thomsen2023}}",
-      "targets": [ { "rec_number": 1, "author": "Thomsen", "year": 2023 } ],
+      "targets": [ { "rec_number": 1, "author": "Thomsen", "year": 2023, "doi": "10.0000/fixture.0001" } ],
+      "display": "author-year",
       "pages": "45-46",
       "suffix": ", p. 99"
     },
@@ -67,9 +73,10 @@ unless `-Overwrite` is supplied, and never writes to the library at all.
       "id": "merged",
       "marker": "{{CITE:merged}}",
       "targets": [
-        { "rec_number": 2, "author": "Magrin",   "year": 2023 },
-        { "rec_number": 3, "author": "Bernhard", "year": 2020 }
-      ]
+        { "rec_number": 2, "author": "Magrin",   "year": 2023, "doi": "10.0000/fixture.0002" },
+        { "rec_number": 3, "author": "Bernhard", "year": 2020, "doi": "10.0000/fixture.0003" }
+      ],
+      "display": "default"
     }
   ],
   "bibliography": { "expected": true }
@@ -100,19 +107,21 @@ Every rule below is a hard failure on the bridge side. There are no warnings in
 | `targets[].rec_number` | Integer greater than 0. |
 | `targets[].author` | Non empty string. |
 | `targets[].year` | Integer. |
+| `targets[].doi` | Bare ASCII DOI matching `^10\.\d{4,9}/[!-~]+$` case insensitively. A `doi:` or resolver prefix is rejected. |
+| `display` | Optional `default` or `author-year`; omitted means `default`. `author-year` requires exactly one target. |
 | `pages` | Optional string, must match `^[0-9]+(\s*-\s*[0-9]+)?$`. |
 | `suffix` | Optional string. |
 | `pages` and `suffix` arity | Either key may only be supplied when `targets` has exactly one entry, because EndNote applies both to the last target only. |
 | `prefix` | Rejected in v1. The error message points at `temporary-citations.md`, because the backslash prefix syntax opens a modal dialog. |
 | `library.path` | Must exist and must have a sibling `<name>.Data` directory. |
-| `style` | Must be a non empty string. |
+| `style` | Optional non empty installed style name. Omitted means the configured default, `IEEE`. |
 | Unknown keys | Any unknown top level key or unknown per citation key is rejected. |
 
 Two further pre conditions are enforced outside `Assert-Manifest`, both before Word opens:
 
-1. Every `rec_number` must exist in the target library. Use `precheck_endnote_manifest`,
-   which reads the library SQLite store directly. A citation pointing at a record that does
-   not exist makes EndNote raise a "select matching reference" dialog and hang.
+1. Every target must pass `precheck_endnote_manifest`, which checks record identity, bare DOI
+   storage, manifest DOI equality, and live resolution through doi.org. A missing record or
+   unresolved DOI blocks rendering.
 2. The requested style name must resolve to an installed `.ens` file. Use
    `list_endnote_styles` first.
 
@@ -142,7 +151,7 @@ algorithm, including the forms that are rejected in v1.
 Source document text, three markers, one per sentence:
 
 ```text
-Automated lameness scoring has been validated on commercial herds {{CITE:thomsen2023}}.
+{{CITE:thomsen2023}} validated automated lameness scoring on commercial herds.
 
 Two independent replications reported comparable agreement {{CITE:merged}}.
 
@@ -155,25 +164,28 @@ Manifest, covering a single citation, a merged citation and a cited pages citati
 {
   "schema_version": 1,
   "library": { "path": "C:\\Users\\<you>\\Documents\\ProjectLibrary.enl" },
-  "style": "APA 7th",
+  "style": "IEEE",
   "citations": [
     {
       "id": "thomsen2023",
       "marker": "{{CITE:thomsen2023}}",
-      "targets": [ { "rec_number": 1, "author": "Thomsen", "year": 2023 } ]
+      "targets": [ { "rec_number": 1, "author": "Thomsen", "year": 2023, "doi": "10.0000/fixture.0001" } ],
+      "display": "author-year"
     },
     {
       "id": "merged",
       "marker": "{{CITE:merged}}",
       "targets": [
-        { "rec_number": 2, "author": "Magrin", "year": 2023 },
-        { "rec_number": 3, "author": "Bernhard", "year": 2020 }
-      ]
+        { "rec_number": 2, "author": "Magrin", "year": 2023, "doi": "10.0000/fixture.0002" },
+        { "rec_number": 3, "author": "Bernhard", "year": 2020, "doi": "10.0000/fixture.0003" }
+      ],
+      "display": "default"
     },
     {
       "id": "rubric_pages",
       "marker": "{{CITE:rubric_pages}}",
-      "targets": [ { "rec_number": 1, "author": "Thomsen", "year": 2023 } ],
+      "targets": [ { "rec_number": 1, "author": "Thomsen", "year": 2023, "doi": "10.0000/fixture.0001" } ],
+      "display": "default",
       "pages": "45-46"
     }
   ],
@@ -187,7 +199,7 @@ Two manifest entries may cite the same `rec_number`. Uniqueness is required of `
 Intermediate document text after step 8, before `ENFormatBibliography` runs:
 
 ```text
-Automated lameness scoring has been validated on commercial herds {Thomsen, 2023 #1}.
+{Thomsen, 2023 #1} validated automated lameness scoring on commercial herds.
 
 Two independent replications reported comparable agreement {Magrin, 2023 #2; Bernhard, 2020 #3}.
 
@@ -203,16 +215,13 @@ Expected output structure after `ENFormatBibliography`:
 - Exactly one `ADDIN EN.REFLIST` field carrying the bibliography, at the end of document.
 - Possibly several `HYPERLINK` fields inside the bibliography for DOI links. They are not
   citations and must not be counted as such.
-- `EN.Layout` reads back `<Style>APA 7th</Style>`.
+- `EN.Layout` reads back `<Style>IEEE</Style>`.
 - `EN.Libraries` lists record ids 1, 2 and 3.
 
-The displayed citation text depends on the active output style. The build spec records
-measured display strings such as `(Thomsen et al., 2023)` and
-`(Thomsen et al., 2023, pp. 45-46)` in section 0.5, but does not record which style
-produced them, so do not treat any particular rendering as guaranteed for `APA 7th`.
-The spec does record one verified style round trip: switching from `Annotated` to `IEEE`
-changed the body text from `(Thomsen, Shearer et al. 2023)` to `[1]` and rewrote the whole
-bibliography.
+With IEEE, `display: default` produces a numeric form such as `[1]`. The bridge applies
+EndNote's own `ENAuthorYearFormat` to `display: author-year`, which places the author name
+before that number, for example `Thomsen et al. [1]`. The exact author-list shortening is
+owned by the output style. Never type the author name into the field result.
 
 ## Bridge command lines for every action
 
@@ -303,6 +312,7 @@ Action notes that the command lines alone do not convey:
 | `ENDNOTE_READY_TIMEOUT_MS` | 90000 | How long `Start-EndNoteWithLibrary` polls for an EndNote main window. |
 | `ENDNOTE_AUTOMATION_TIMEOUT_MS` | 60000 | How long the render step polls for the expected EN.CITE field count. |
 | `ENDNOTE_WORD_POWERSHELL` | unset | Overrides which PowerShell executable the MCP server spawns. |
+| `ENDNOTE_WORD_PYTHON` | first Python 3 on PATH | Python used for the mandatory DOI and library precheck. |
 | `ENDNOTE_WORD_TIMEOUT_SECONDS` | 240 | MCP server subprocess timeout before the watchdog kills orphaned processes. |
 | `ENDNOTE_LIVE_TEST` | unset | Set to `1` to enable the live integration test. |
 | `ENDNOTE_TEST_LIBRARY` | unset | Library path used by the live integration test. |
@@ -315,13 +325,15 @@ the render result to carry these fields:
 | Field | Meaning |
 |---|---|
 | `citations` | Number of manifest citations processed. |
+| `author_year_citations` | Number converted with EndNote's `ENAuthorYearFormat`. |
 | `targets` | Number of individual targets across those citations. |
+| `doi_verified` | Number of targets whose DOI resolved successfully before Word opened. |
 | `style` | Style written into `EN.Layout`. |
 | `bibliography_present` | Whether an `ADDIN EN.REFLIST` field exists. |
 | `endnote_preexisting` | True when EndNote was already running and the bridge did not start it. |
 | `endnote_autostarted` | True when a new EndNote process appeared during the call, whether the bridge started it or CWYW auto-launched it. |
 
-Always run `validate` afterwards. It applies eight gates, and any failure sets
+Always run `validate` afterwards. It applies ten gates, and any failure sets
 `ok: false` and exit code 3:
 
 1. No `{{CITE:` marker text remains anywhere in the document.
@@ -332,15 +344,19 @@ Always run `validate` afterwards. It applies eight gates, and any failure sets
    `field-codes-and-traveling-library.md`.
 4. When `bibliography.expected` is true, exactly one `ADDIN EN.REFLIST` field exists and
    its `Result.Text` is non empty after trimming.
-5. Every manifest `rec_number` appears in some EN.CITE traveling library XML as
+5. Every cited DOI is visibly present as `doi: https://doi.org/<DOI>`, and no duplicated
+   DOI resolver prefix occurs.
+6. Every manifest `rec_number` appears in some EN.CITE traveling library XML as
    `<rec-number>N</rec-number>`, and its `author` surname appears in the same field's XML.
    A record whose payload was moved into a nested `ADDIN EN.CITE.DATA` field is matched
    against that nested field's own code text.
-6. Document text contains none of `Error!`, `Reference source not found`, `{Citation}` or
+7. Every citation requesting `display: author-year` has a native field result containing
+   its author surname.
+8. Document text contains none of `Error!`, `Reference source not found`, `{Citation}` or
    `{Bibliography}`.
-7. The `EN.Layout` document variable exists and its style equals the manifest `style`,
+9. The `EN.Layout` document variable exists and its style equals the manifest `style`,
    compared case insensitively, when a manifest is supplied.
-8. The `EN.Libraries` document variable exists and contains every manifest `rec_number`
+10. The `EN.Libraries` document variable exists and contains every manifest `rec_number`
    inside `<record-ids>`.
 
 Report shape:

@@ -1,6 +1,6 @@
 {
   "name": "endnote-for-word",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Insert and validate native EndNote CWYW citations and bibliographies in Word documents, driven by a reviewable JSON manifest.",
   "author": {
     "name": "Jia-Ming Zhou (Felimet)"

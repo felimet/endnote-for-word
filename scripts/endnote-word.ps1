@@ -90,7 +90,13 @@ $script:UserDefaultsPath = Join-Path $script:UserConfigDirectory 'defaults.json'
 # operation and there is no remove-field-codes action.
 $script:CwywFormatMacro = 'ENFormatBibliography'
 $script:CwywUnformatMacro = 'ENUnformatCitations'
+$script:CwywAuthorYearMacro = 'ENAuthorYearFormat'
 $script:InteractiveMacroPattern = 'Dlg$'
+$script:AllowedCwywMacros = @(
+    $script:CwywFormatMacro,
+    $script:CwywUnformatMacro,
+    $script:CwywAuthorYearMacro
+)
 
 $script:CwywAddInProgId = 'EndNote.WordAddin.Connect'
 $script:CwywTemplateFileName = 'EndNote Cwyw.dotm'
@@ -142,6 +148,9 @@ $script:CitationMarkerPrefix = '{{CITE:'
 $script:TemporaryCitationPattern = '\{[^{}]*#\d+[^{}]*\}'
 $script:BrokenReferenceStrings = @('Error!', 'Reference source not found', '{Citation}', '{Bibliography}')
 $script:RecordNumberElementFormat = '<rec-number>{0}</rec-number>'
+$script:DoiPattern = '^10\.\d{4,9}/[!-~]+$'
+$script:DoiResolverPrefix = 'https://doi.org/'
+$script:DuplicateDoiResolverPattern = '(?i)https://doi\.org/(?:https?://(?:dx\.)?doi\.org/|doi:\s*)'
 
 # Manifest schema v1.
 $script:ManifestSchemaVersion = 1
@@ -151,11 +160,20 @@ $script:CitedPagesPattern = '^[0-9]+(\s*-\s*[0-9]+)?$'
 # EndNote dialog (a leading backslash is the unsupported prefix / exclude-author syntax).
 $script:ForbiddenCitationTextPattern = '[{}#@;\\]'
 $script:AllowedManifestKeys = @('schema_version', 'library', 'style', 'citations', 'bibliography')
-$script:AllowedCitationKeys = @('id', 'marker', 'targets', 'pages', 'suffix')
-$script:AllowedTargetKeys = @('rec_number', 'author', 'year')
+$script:AllowedCitationKeys = @('id', 'marker', 'targets', 'display', 'pages', 'suffix')
+$script:AllowedTargetKeys = @('rec_number', 'author', 'year', 'doi')
 $script:AllowedLibraryKeys = @('path')
 $script:AllowedBibliographyKeys = @('expected')
 $script:RejectedCitationKeys = @('prefix')
+$script:DefaultCitationDisplay = 'default'
+$script:AuthorYearCitationDisplay = 'author-year'
+$script:AllowedCitationDisplays = @(
+    $script:DefaultCitationDisplay,
+    $script:AuthorYearCitationDisplay
+)
+$script:PythonEnvironmentVariable = 'ENDNOTE_WORD_PYTHON'
+$script:PythonCandidates = @('python.exe', 'python3.exe', 'python', 'python3')
+$script:LibraryScriptPath = Join-Path $PSScriptRoot 'endnote_library.py'
 
 # Word enumeration values used by this bridge.
 # WdSaveFormat.wdFormatXMLDocument. Not wdFormatDocumentDefault (16): that value honours the
@@ -252,6 +270,125 @@ function Get-OptionalProperty {
     $property = $Object.PSObject.Properties[$Name]
     if ($null -eq $property) { return $null }
     return $property.Value
+}
+
+function Get-AgentDefaults {
+    $path = $script:PackagedDefaultsPath
+    if (Test-Path -LiteralPath $script:UserDefaultsPath -PathType Leaf) {
+        $path = $script:UserDefaultsPath
+    }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Agent defaults are missing: $path"
+    }
+    try { return Get-Content -Raw -LiteralPath $path | ConvertFrom-Json }
+    catch { throw "Agent defaults are not valid JSON ($path): $($_.Exception.Message)" }
+}
+
+function Get-DefaultOutputStyle {
+    $defaults = Get-AgentDefaults
+    $styleSettings = Get-OptionalProperty -Object $defaults -Name 'style'
+    $styleName = [string](Get-OptionalProperty -Object $styleSettings -Name 'default_output_style')
+    if ([string]::IsNullOrWhiteSpace($styleName)) {
+        throw 'Agent defaults do not define style.default_output_style.'
+    }
+    return $styleName.Trim()
+}
+
+function Resolve-PythonExecutable {
+    $configured = [Environment]::GetEnvironmentVariable($script:PythonEnvironmentVariable)
+    if (-not [string]::IsNullOrWhiteSpace($configured)) {
+        if (-not (Test-Path -LiteralPath $configured -PathType Leaf)) {
+            throw "$($script:PythonEnvironmentVariable) does not point to a Python executable: $configured"
+        }
+        return (Resolve-Path -LiteralPath $configured).Path
+    }
+
+    foreach ($candidate in $script:PythonCandidates) {
+        try {
+            $command = Get-Command -Name $candidate -CommandType Application -ErrorAction Stop |
+                Select-Object -First 1
+            if ($null -ne $command) { return $command.Source }
+        }
+        catch [System.Management.Automation.CommandNotFoundException] { continue }
+        catch { Write-Log -Level WARN -Message "Could not probe Python candidate '$candidate': $($_.Exception.Message)" }
+    }
+    throw "Python 3 is required for DOI and library precheck. Set $($script:PythonEnvironmentVariable) to the full python.exe path."
+}
+
+function ConvertTo-ProcessArgument {
+    param([Parameter(Mandatory)][string]$Value)
+    if ($Value.Contains('"')) { throw "A child-process argument cannot contain a double quote: $Value" }
+    return '"' + $Value + '"'
+}
+
+function Invoke-HiddenProcess {
+    param(
+        [Parameter(Mandatory)][string]$Executable,
+        [Parameter(Mandatory)][string]$Arguments
+    )
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Executable
+    $startInfo.Arguments = $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    try {
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        $startInfo.StandardOutputEncoding = $utf8
+        $startInfo.StandardErrorEncoding = $utf8
+    }
+    catch { Write-Log -Level WARN -Message "Could not force UTF-8 for a child process: $($_.Exception.Message)" }
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) { throw "The child process did not start: $Executable" }
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        return [ordered]@{ exit_code = $process.ExitCode; stdout = $stdout; stderr = $stderr }
+    }
+    finally { $process.Dispose() }
+}
+
+function Invoke-ManifestPrecheck {
+    param(
+        [Parameter(Mandatory)][string]$LibraryFile,
+        [Parameter(Mandatory)][string]$ManifestFile
+    )
+    if (-not (Test-Path -LiteralPath $script:LibraryScriptPath -PathType Leaf)) {
+        throw "The read-only library precheck script is missing: $script:LibraryScriptPath"
+    }
+    $python = Resolve-PythonExecutable
+    $arguments = @(
+        (ConvertTo-ProcessArgument -Value $script:LibraryScriptPath),
+        'precheck',
+        '--library',
+        (ConvertTo-ProcessArgument -Value $LibraryFile),
+        '--manifest',
+        (ConvertTo-ProcessArgument -Value $ManifestFile)
+    ) -join ' '
+
+    $captured = Invoke-HiddenProcess -Executable $python -Arguments $arguments
+    if (-not [string]::IsNullOrWhiteSpace($captured.stderr)) {
+        Write-Log -Level INFO -Message $captured.stderr.Trim()
+    }
+    $lines = @($captured.stdout -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($lines.Count -eq 0) { throw "The DOI and library precheck returned no JSON (exit $($captured.exit_code))." }
+    try { $result = $lines[$lines.Count - 1] | ConvertFrom-Json }
+    catch { throw "The DOI and library precheck returned invalid JSON: $($_.Exception.Message)" }
+    if ($captured.exit_code -eq 0 -and [bool](Get-OptionalProperty -Object $result -Name 'ok')) {
+        return $result
+    }
+    $details = New-Object System.Collections.Generic.List[string]
+    foreach ($problem in @(Get-OptionalProperty -Object $result -Name 'problems')) {
+        $details.Add(([string](Get-OptionalProperty -Object $problem -Name 'problem')) + ': ' + ([string](Get-OptionalProperty -Object $problem -Name 'message')))
+    }
+    $errorText = [string](Get-OptionalProperty -Object $result -Name 'error')
+    if (-not [string]::IsNullOrWhiteSpace($errorText)) { $details.Add($errorText) }
+    if ($details.Count -eq 0) { $details.Add("precheck exited $($captured.exit_code)") }
+    throw ('DOI and library precheck failed: ' + ($details -join ' | '))
 }
 
 function ConvertTo-ComparableVersion {
@@ -627,6 +764,9 @@ function Invoke-CwywMacro {
     if ($Name -match $script:InteractiveMacroPattern) {
         throw "Refusing to call the interactive CWYW macro '$Name'. Macros whose name ends in Dlg open a modal dialog that blocks Application.Run forever."
     }
+    if ($script:AllowedCwywMacros -notcontains $Name) {
+        throw "Refusing to call unverified CWYW macro '$Name'. Only measured, non-interactive macros are allowed."
+    }
     if ($null -eq $script:Word) { throw "Word is not running; cannot call '$Name'." }
     Assert-CwywTemplateLoaded
     Write-Log -Level INFO -Message "Calling CWYW macro '$Name'."
@@ -685,7 +825,9 @@ function Start-EndNoteWithLibrary {
     Write-Log -Level INFO -Message "Starting EndNote with library: $LibraryFile"
     $argument = '"' + $LibraryFile + '"'
     $started = $null
-    try { $started = Start-Process -FilePath $installation.executable -ArgumentList $argument -PassThru }
+    try {
+        $started = Start-Process -FilePath $installation.executable -ArgumentList $argument -PassThru -WindowStyle Hidden
+    }
     catch { throw "Could not start EndNote from '$($installation.executable)': $($_.Exception.Message)" }
 
     $deadline = [DateTime]::UtcNow.AddMilliseconds($script:EndNoteReadyTimeoutMilliseconds)
@@ -883,6 +1025,88 @@ function Assert-CitationText {
     }
 }
 
+function Get-CitationDisplay {
+    param([Parameter(Mandatory)]$Citation)
+    $display = [string](Get-OptionalProperty -Object $Citation -Name 'display')
+    if ([string]::IsNullOrWhiteSpace($display)) { return $script:DefaultCitationDisplay }
+    return $display.Trim().ToLowerInvariant()
+}
+
+function Assert-ManifestTarget {
+    param(
+        [Parameter(Mandatory)]$Target,
+        [Parameter(Mandatory)][string]$CitationId
+    )
+    Assert-AllowedKeys -Object $Target -Allowed $script:AllowedTargetKeys -Label "A target of citation '$CitationId'"
+    $recNumber = ConvertTo-ManifestInteger -Value (Get-OptionalProperty -Object $Target -Name 'rec_number') -Label "Citation '$CitationId' rec_number"
+    if ($recNumber -le 0) { throw "Citation '$CitationId' rec_number must be greater than 0: $recNumber" }
+    $author = [string](Get-OptionalProperty -Object $Target -Name 'author')
+    if ([string]::IsNullOrWhiteSpace($author)) { throw "Citation '$CitationId' requires a non-empty author for every target." }
+    Assert-CitationText -Value $author -Label "Citation '$CitationId' author"
+    $null = ConvertTo-ManifestInteger -Value (Get-OptionalProperty -Object $Target -Name 'year') -Label "Citation '$CitationId' year"
+    $doi = [string](Get-OptionalProperty -Object $Target -Name 'doi')
+    if ([string]::IsNullOrWhiteSpace($doi)) { throw "Citation '$CitationId' requires a DOI for every target." }
+    if ($doi -notmatch $script:DoiPattern) {
+        throw "Citation '$CitationId' DOI must be the bare DOI without 'doi:' or a resolver URL: $doi"
+    }
+}
+
+function Assert-CitationOptions {
+    param(
+        [Parameter(Mandatory)]$Citation,
+        [Parameter(Mandatory)][string]$CitationId,
+        [Parameter(Mandatory)][int]$TargetCount
+    )
+    $display = Get-CitationDisplay -Citation $Citation
+    if ($script:AllowedCitationDisplays -notcontains $display) {
+        throw "Citation '$CitationId' display must be 'default' or 'author-year': $display"
+    }
+    if ($display -eq $script:AuthorYearCitationDisplay -and $TargetCount -ne 1) {
+        throw "Citation '$CitationId' uses display 'author-year', which requires exactly one target. Use default display for merged citations."
+    }
+    $pages = Get-OptionalProperty -Object $Citation -Name 'pages'
+    $suffix = Get-OptionalProperty -Object $Citation -Name 'suffix'
+    if ($null -ne $pages) {
+        if ($pages -isnot [string]) { throw "Citation '$CitationId' pages must be a string." }
+        if ([string]$pages -notmatch $script:CitedPagesPattern) {
+            throw "Citation '$CitationId' pages must match $($script:CitedPagesPattern), for example 45 or 45-46: $pages"
+        }
+    }
+    if ($null -ne $suffix) {
+        if ($suffix -isnot [string]) { throw "Citation '$CitationId' suffix must be a string." }
+        if ([string]::IsNullOrWhiteSpace([string]$suffix)) { throw "Citation '$CitationId' suffix must not be blank." }
+        Assert-CitationText -Value ([string]$suffix) -Label "Citation '$CitationId' suffix"
+    }
+    if (($null -ne $pages -or $null -ne $suffix) -and $TargetCount -ne 1) {
+        throw "Citation '$CitationId' supplies pages or suffix, which EndNote applies to the last target only. Split the merged citation so that pages and suffix belong to a citation with exactly one target."
+    }
+}
+
+function Assert-ManifestCitation {
+    param(
+        [Parameter(Mandatory)]$Citation,
+        [Parameter(Mandatory)]$Identifiers,
+        [Parameter(Mandatory)]$Markers
+    )
+    $id = [string](Get-OptionalProperty -Object $Citation -Name 'id')
+    if ([string]::IsNullOrWhiteSpace($id)) { throw 'Every citation requires a non-empty id.' }
+    if ($id -notmatch $script:CitationIdPattern) { throw "Citation id must match $($script:CitationIdPattern): $id" }
+    if (-not $Identifiers.Add($id)) { throw "Duplicate citation id: $id" }
+    foreach ($rejected in $script:RejectedCitationKeys) {
+        if ($null -ne $Citation.PSObject.Properties[$rejected]) {
+            throw "Citation '$id' uses '$rejected', which schema v1 rejects. EndNote's backslash prefix syntax opens a modal dialog and hangs the run. See references/temporary-citations.md."
+        }
+    }
+    Assert-AllowedKeys -Object $Citation -Allowed $script:AllowedCitationKeys -Label "Citation '$id'"
+    $marker = [string](Get-OptionalProperty -Object $Citation -Name 'marker')
+    if ([string]::IsNullOrWhiteSpace($marker)) { throw "Citation '$id' requires a marker." }
+    if (-not $Markers.Add($marker)) { throw "Duplicate marker: $marker" }
+    $targets = @(Get-OptionalProperty -Object $Citation -Name 'targets')
+    if ($targets.Count -eq 0) { throw "Citation '$id' requires a non-empty targets array." }
+    foreach ($target in $targets) { Assert-ManifestTarget -Target $target -CitationId $id }
+    Assert-CitationOptions -Citation $Citation -CitationId $id -TargetCount $targets.Count
+}
+
 function Assert-Manifest {
     param(
         [Parameter(Mandatory)]$Manifest,
@@ -892,9 +1116,10 @@ function Assert-Manifest {
     Assert-AllowedKeys -Object $Manifest -Allowed $script:AllowedManifestKeys -Label 'The manifest'
 
     $styleValue = Get-OptionalProperty -Object $Manifest -Name 'style'
-    if ($styleValue -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$styleValue)) {
-        throw 'Manifest style must be a non-empty string naming an installed EndNote output style.'
+    if ($null -ne $styleValue -and ($styleValue -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$styleValue))) {
+        throw 'Manifest style must be omitted or be a non-empty string naming an installed EndNote output style.'
     }
+    if ($null -eq $styleValue) { $null = Get-DefaultOutputStyle }
 
     $citations = @(Get-OptionalProperty -Object $Manifest -Name 'citations')
     if ($citations.Count -eq 0) { throw 'Manifest citations must be a non-empty array.' }
@@ -911,52 +1136,7 @@ function Assert-Manifest {
     $ids = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::Ordinal)
     $markers = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::Ordinal)
     foreach ($citation in $citations) {
-        $id = [string](Get-OptionalProperty -Object $citation -Name 'id')
-        if ([string]::IsNullOrWhiteSpace($id)) { throw 'Every citation requires a non-empty id.' }
-        if ($id -notmatch $script:CitationIdPattern) {
-            throw "Citation id must match $($script:CitationIdPattern): $id"
-        }
-        if (-not $ids.Add($id)) { throw "Duplicate citation id: $id" }
-
-        foreach ($rejected in $script:RejectedCitationKeys) {
-            if ($null -ne $citation.PSObject.Properties[$rejected]) {
-                throw "Citation '$id' uses '$rejected', which schema v1 rejects. EndNote's backslash prefix syntax opens a modal dialog and hangs the run. See references/temporary-citations.md."
-            }
-        }
-        Assert-AllowedKeys -Object $citation -Allowed $script:AllowedCitationKeys -Label "Citation '$id'"
-
-        $marker = [string](Get-OptionalProperty -Object $citation -Name 'marker')
-        if ([string]::IsNullOrWhiteSpace($marker)) { throw "Citation '$id' requires a marker." }
-        if (-not $markers.Add($marker)) { throw "Duplicate marker: $marker" }
-
-        $targets = @(Get-OptionalProperty -Object $citation -Name 'targets')
-        if ($targets.Count -eq 0) { throw "Citation '$id' requires a non-empty targets array." }
-        foreach ($target in $targets) {
-            Assert-AllowedKeys -Object $target -Allowed $script:AllowedTargetKeys -Label "A target of citation '$id'"
-            $recNumber = ConvertTo-ManifestInteger -Value (Get-OptionalProperty -Object $target -Name 'rec_number') -Label "Citation '$id' rec_number"
-            if ($recNumber -le 0) { throw "Citation '$id' rec_number must be greater than 0: $recNumber" }
-            $author = [string](Get-OptionalProperty -Object $target -Name 'author')
-            if ([string]::IsNullOrWhiteSpace($author)) { throw "Citation '$id' requires a non-empty author for every target." }
-            Assert-CitationText -Value $author -Label "Citation '$id' author"
-            $null = ConvertTo-ManifestInteger -Value (Get-OptionalProperty -Object $target -Name 'year') -Label "Citation '$id' year"
-        }
-
-        $pages = Get-OptionalProperty -Object $citation -Name 'pages'
-        $suffix = Get-OptionalProperty -Object $citation -Name 'suffix'
-        if ($null -ne $pages) {
-            if ($pages -isnot [string]) { throw "Citation '$id' pages must be a string." }
-            if ([string]$pages -notmatch $script:CitedPagesPattern) {
-                throw "Citation '$id' pages must match $($script:CitedPagesPattern), for example 45 or 45-46: $pages"
-            }
-        }
-        if ($null -ne $suffix) {
-            if ($suffix -isnot [string]) { throw "Citation '$id' suffix must be a string." }
-            if ([string]::IsNullOrWhiteSpace([string]$suffix)) { throw "Citation '$id' suffix must not be blank." }
-            Assert-CitationText -Value ([string]$suffix) -Label "Citation '$id' suffix"
-        }
-        if (($null -ne $pages -or $null -ne $suffix) -and $targets.Count -ne 1) {
-            throw "Citation '$id' supplies pages or suffix, which EndNote applies to the last target only. Split the merged citation so that pages and suffix belong to a citation with exactly one target."
-        }
+        Assert-ManifestCitation -Citation $citation -Identifiers $ids -Markers $markers
     }
 
     if ($SkipLibraryCheck) { return }
@@ -988,9 +1168,120 @@ function Get-TemporaryCitationText {
     return $text + '}'
 }
 
+function Get-CitationMarkerPlans {
+    param([Parameter(Mandatory)][object[]]$Citations)
+    $plans = New-Object System.Collections.Generic.List[object]
+    foreach ($citation in $Citations) {
+        $marker = [string](Get-OptionalProperty -Object $citation -Name 'marker')
+        $range = Find-UniqueMarkerRange -Marker $marker
+        try {
+            $plans.Add([ordered]@{
+                    citation = $citation
+                    start    = [int]$range.Start
+                    end      = [int]$range.End
+                    text     = Get-TemporaryCitationText -Citation $citation
+                })
+        }
+        finally { Release-ComObject $range }
+    }
+    return @($plans | Sort-Object -Property start)
+}
+
+function Set-CitationMarkers {
+    param([Parameter(Mandatory)][object[]]$Plans)
+    # Replace from the end of the document so every earlier saved range stays valid.
+    foreach ($plan in @($Plans | Sort-Object -Property start -Descending)) {
+        $range = $script:Document.Range([int]$plan.start, [int]$plan.end)
+        try { $range.Text = [string]$plan.text }
+        finally { Release-ComObject $range }
+    }
+}
+
+function Get-CitationFieldByOrdinal {
+    param([Parameter(Mandatory)][int]$Ordinal)
+    $seen = 0
+    for ($index = 1; $index -le $script:Document.Fields.Count; $index++) {
+        $field = $script:Document.Fields.Item($index)
+        $keep = $false
+        try {
+            $code = [string]$field.Code.Text
+            if ($code -match $script:CitationDataFieldPattern) { continue }
+            if ($code -match $script:CitationFieldPattern) {
+                if ($seen -eq $Ordinal) {
+                    $keep = $true
+                    return $field
+                }
+                $seen++
+            }
+        }
+        finally {
+            if (-not $keep) { Release-ComObject $field }
+        }
+    }
+    throw "Could not find native EndNote citation field ordinal $Ordinal."
+}
+
+function Set-CitationDisplayFormats {
+    param(
+        [Parameter(Mandatory)][object[]]$Plans,
+        [Parameter(Mandatory)][string]$StyleName
+    )
+    $authorYearCount = 0
+    for ($ordinal = 0; $ordinal -lt $Plans.Count; $ordinal++) {
+        $citation = $Plans[$ordinal].citation
+        if ((Get-CitationDisplay -Citation $citation) -ne $script:AuthorYearCitationDisplay) {
+            continue
+        }
+        $field = Get-CitationFieldByOrdinal -Ordinal $ordinal
+        $result = $null
+        try {
+            $result = $field.Result
+            $result.Select()
+            Invoke-CwywMacro -Name $script:CwywAuthorYearMacro
+        }
+        finally {
+            Release-ComObject $result
+            Release-ComObject $field
+        }
+
+        $updatedField = Get-CitationFieldByOrdinal -Ordinal $ordinal
+        $updatedResult = $null
+        try {
+            $updatedResult = $updatedField.Result
+            $displayText = [string]$updatedResult.Text
+            $target = @(Get-OptionalProperty -Object $citation -Name 'targets')[0]
+            $author = [string](Get-OptionalProperty -Object $target -Name 'author')
+            if ($displayText.IndexOf($author, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                throw "Citation display conversion failed: '$displayText' does not contain author '$author'."
+            }
+            if ($StyleName -ieq 'IEEE' -and $displayText -notmatch '\[\s*\d+') {
+                throw "IEEE author-year citation '$displayText' does not contain a bracketed bibliography number."
+            }
+        }
+        finally {
+            Release-ComObject $updatedResult
+            Release-ComObject $updatedField
+        }
+        $authorYearCount++
+    }
+    return $authorYearCount
+}
+
 # ---------------------------------------------------------------------------------------------
 # Document inspection.
 # ---------------------------------------------------------------------------------------------
+
+function Get-FieldResultText {
+    param(
+        [Parameter(Mandatory)]$Field,
+        [Parameter(Mandatory)][string]$Label
+    )
+    try { return [string]$Field.Result.Text }
+    catch {
+        Write-Log -Level WARN -Message "Could not read the result of $Label`: $($_.Exception.Message)"
+        return ''
+    }
+}
 
 function Find-UniqueMarkerRange {
     param([Parameter(Mandatory)][string]$Marker)
@@ -1022,8 +1313,10 @@ function Find-UniqueMarkerRange {
 function Get-CitationFields {
     if ($null -eq $script:Document) { throw 'No Word document is open; cannot enumerate fields.' }
     $citationCodes = New-Object System.Collections.Generic.List[string]
+    $citationResults = New-Object System.Collections.Generic.List[string]
     $citationDataCodes = New-Object System.Collections.Generic.List[string]
     $bibliographyCodes = New-Object System.Collections.Generic.List[string]
+    $bibliographyResults = New-Object System.Collections.Generic.List[string]
     $bibliographyResultLengths = New-Object System.Collections.Generic.List[int]
     $hyperlinkCount = 0
 
@@ -1041,13 +1334,13 @@ function Get-CitationFields {
             }
             elseif ($code -match $script:CitationFieldPattern) {
                 $citationCodes.Add($code)
+                $citationResults.Add((Get-FieldResultText -Field $field -Label "citation field $index"))
             }
             elseif ($code -match $script:BibliographyFieldPattern) {
                 $bibliographyCodes.Add($code)
-                $resultLength = 0
-                try { $resultLength = ([string]$field.Result.Text).Trim().Length }
-                catch { Write-Log -Level WARN -Message "Could not read the result of bibliography field ${index}: $($_.Exception.Message)" }
-                $bibliographyResultLengths.Add($resultLength)
+                $bibliographyResult = Get-FieldResultText -Field $field -Label "bibliography field $index"
+                $bibliographyResults.Add($bibliographyResult)
+                $bibliographyResultLengths.Add($bibliographyResult.Trim().Length)
             }
             elseif ($code -match $script:HyperlinkFieldPattern) {
                 $hyperlinkCount++
@@ -1058,8 +1351,10 @@ function Get-CitationFields {
 
     return [ordered]@{
         citation_codes              = $citationCodes
+        citation_results            = $citationResults
         citation_data_codes         = $citationDataCodes
         bibliography_codes          = $bibliographyCodes
+        bibliography_results        = $bibliographyResults
         bibliography_result_lengths = $bibliographyResultLengths
         hyperlink_count             = $hyperlinkCount
     }
@@ -1079,6 +1374,162 @@ function Wait-CitationFieldCount {
     return $fields
 }
 
+function Add-CoreValidationProblems {
+    param($Fields, [string]$PlainText, $Manifest, $Errors)
+    if ($PlainText.Contains($script:CitationMarkerPrefix)) {
+        $Errors.Add("Unresolved citation marker text remains in the document ($($script:CitationMarkerPrefix)...).")
+    }
+    $residual = [regex]::Match($PlainText, $script:TemporaryCitationPattern)
+    if ($residual.Success) {
+        $Errors.Add("Unformatted temporary citation text remains in the document: $($residual.Value)")
+    }
+    $citationCount = $Fields.citation_codes.Count
+    if ($null -ne $Manifest) {
+        $expected = @(Get-OptionalProperty -Object $Manifest -Name 'citations').Count
+        if ($citationCount -ne $expected) {
+            $Errors.Add("Expected $expected native ADDIN EN.CITE fields; found $citationCount.")
+        }
+    }
+    elseif ($citationCount -lt 1) { $Errors.Add('The document contains no native ADDIN EN.CITE field.') }
+    foreach ($broken in $script:BrokenReferenceStrings) {
+        if ($PlainText.Contains($broken)) {
+            $Errors.Add("The document text contains a broken citation placeholder: $broken")
+        }
+    }
+}
+
+function Add-BibliographyValidationProblems {
+    param($Fields, $Manifest, $Errors, $Warnings)
+    if ($null -eq $Manifest) { return }
+    $bibliography = Get-OptionalProperty -Object $Manifest -Name 'bibliography'
+    $expectedFlag = Get-OptionalProperty -Object $bibliography -Name 'expected'
+    if ($expectedFlag -isnot [bool]) {
+        $Warnings.Add('The manifest does not declare bibliography.expected, so the bibliography gate was skipped.')
+        return
+    }
+    if (-not [bool]$expectedFlag) { return }
+    if ($Fields.bibliography_codes.Count -ne 1) {
+        $Errors.Add("Expected exactly one ADDIN EN.REFLIST bibliography field; found $($Fields.bibliography_codes.Count).")
+        return
+    }
+    if ($Fields.bibliography_result_lengths[0] -le 0) {
+        $Errors.Add('The ADDIN EN.REFLIST bibliography field is empty.')
+        return
+    }
+    $bibliographyText = [string]$Fields.bibliography_results[0]
+    if ($bibliographyText -match $script:DuplicateDoiResolverPattern) {
+        $Errors.Add('The bibliography contains a duplicated DOI resolver prefix.')
+    }
+    $checkedDois = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($citation in @(Get-OptionalProperty -Object $Manifest -Name 'citations')) {
+        foreach ($target in @(Get-OptionalProperty -Object $citation -Name 'targets')) {
+            $doi = [string](Get-OptionalProperty -Object $target -Name 'doi')
+            if (-not $checkedDois.Add($doi)) { continue }
+            $visibleDoi = 'doi: ' + $script:DoiResolverPrefix + $doi
+            if ($bibliographyText.IndexOf($visibleDoi, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                $Errors.Add("The bibliography does not visibly contain '$visibleDoi'. Check the output style Bibliography Templates.")
+            }
+        }
+    }
+}
+
+function Add-TravelingLibraryValidationProblems {
+    param($Payloads, $Manifest, $Errors, $Warnings)
+    if ($null -eq $Manifest) {
+        $Warnings.Add('No manifest supplied; record numbers, authors, style and library provenance were not checked.')
+        return
+    }
+    foreach ($citation in @(Get-OptionalProperty -Object $Manifest -Name 'citations')) {
+        $citationId = [string](Get-OptionalProperty -Object $citation -Name 'id')
+        foreach ($target in @(Get-OptionalProperty -Object $citation -Name 'targets')) {
+            $recNumber = ConvertTo-ManifestInteger -Value (Get-OptionalProperty -Object $target -Name 'rec_number') -Label "Citation '$citationId' rec_number"
+            $author = ([string](Get-OptionalProperty -Object $target -Name 'author')).Trim()
+            $element = [string]::Format($script:RecordNumberElementFormat, $recNumber)
+            $recordSeen = $false
+            $matched = $false
+            foreach ($payload in $Payloads) {
+                if ($payload.IndexOf($element, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+                $recordSeen = $true
+                if ($payload.IndexOf($author, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true; break }
+            }
+            if (-not $recordSeen) {
+                $Errors.Add("Citation '$citationId': rec-number $recNumber is absent from every traveling library payload.")
+            }
+            elseif (-not $matched) {
+                $Errors.Add("Citation '$citationId': rec-number $recNumber was found, but the author surname '$author' does not appear in the same traveling library payload.")
+            }
+        }
+    }
+}
+
+function Add-CitationDisplayValidationProblems {
+    param($Fields, $Manifest, $Errors)
+    if ($null -eq $Manifest) { return }
+    foreach ($citation in @(Get-OptionalProperty -Object $Manifest -Name 'citations')) {
+        if ((Get-CitationDisplay -Citation $citation) -ne $script:AuthorYearCitationDisplay) { continue }
+        $citationId = [string](Get-OptionalProperty -Object $citation -Name 'id')
+        $target = @(Get-OptionalProperty -Object $citation -Name 'targets')[0]
+        $recNumber = ConvertTo-ManifestInteger -Value (Get-OptionalProperty -Object $target -Name 'rec_number') -Label "Citation '$citationId' rec_number"
+        $author = [string](Get-OptionalProperty -Object $target -Name 'author')
+        $element = [string]::Format($script:RecordNumberElementFormat, $recNumber)
+        $displayMatched = $false
+        for ($citationIndex = 0; $citationIndex -lt $Fields.citation_codes.Count; $citationIndex++) {
+            $code = [string]$Fields.citation_codes[$citationIndex]
+            $resultText = [string]$Fields.citation_results[$citationIndex]
+            if ($code.IndexOf($element, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+            if ($resultText.IndexOf($author, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $displayMatched = $true; break }
+        }
+        if (-not $displayMatched) {
+            $Errors.Add("Citation '$citationId' requests display 'author-year', but no matching native field visibly contains author '$author'.")
+        }
+    }
+}
+
+function Get-ValidatedStyleName {
+    param($Manifest, $Errors)
+    $layout = Get-EndNoteLayout
+    if ($null -eq $layout) {
+        $Errors.Add("The $($script:LayoutVariableName) document variable is missing, so EndNote does not own this document's citations.")
+        return $null
+    }
+    $styleName = $layout.style
+    if ([string]::IsNullOrWhiteSpace($styleName)) {
+        $Errors.Add("The $($script:LayoutVariableName) document variable carries no <Style> element.")
+    }
+    elseif ($null -ne $Manifest) {
+        $manifestStyle = [string](Get-OptionalProperty -Object $Manifest -Name 'style')
+        if ([string]::IsNullOrWhiteSpace($manifestStyle)) { $manifestStyle = Get-DefaultOutputStyle }
+        if ($styleName -ine $manifestStyle) {
+            $Errors.Add("The document output style is '$styleName' but the manifest requests '$manifestStyle'.")
+        }
+    }
+    return $styleName
+}
+
+function Get-ValidatedLibraries {
+    param($Manifest, $Errors, $Warnings)
+    $libraries = @(Get-EndNoteLibraries -Warnings $Warnings)
+    if ($libraries.Count -eq 0) {
+        $Errors.Add("The $($script:LibrariesVariableName) document variable is missing or lists no library.")
+        return $libraries
+    }
+    if ($null -eq $Manifest) { return $libraries }
+    $recordedIds = New-Object System.Collections.Generic.HashSet[int]
+    foreach ($library in $libraries) {
+        foreach ($recordId in $library.record_ids) { [void]$recordedIds.Add([int]$recordId) }
+    }
+    foreach ($citation in @(Get-OptionalProperty -Object $Manifest -Name 'citations')) {
+        $citationId = [string](Get-OptionalProperty -Object $citation -Name 'id')
+        foreach ($target in @(Get-OptionalProperty -Object $citation -Name 'targets')) {
+            $recNumber = ConvertTo-ManifestInteger -Value (Get-OptionalProperty -Object $target -Name 'rec_number') -Label "Citation '$citationId' rec_number"
+            if (-not $recordedIds.Contains($recNumber)) {
+                $Errors.Add("Citation '$citationId': rec-number $recNumber is absent from the $($script:LibrariesVariableName) record-ids list.")
+            }
+        }
+    }
+    return $libraries
+}
+
 function Get-ValidationReport {
     param(
         [Parameter(Mandatory)][string]$DocumentPath,
@@ -1093,125 +1544,13 @@ function Get-ValidationReport {
     foreach ($code in $fields.citation_data_codes) { $payloads.Add($code) }
 
     $plainText = [string]$script:Document.Content.Text
-
-    # Gate 1: no manifest marker text survives.
-    if ($plainText.Contains($script:CitationMarkerPrefix)) {
-        $errors.Add("Unresolved citation marker text remains in the document ($($script:CitationMarkerPrefix)...).")
-    }
-
-    # Gate 2: no residual temporary citation text survives.
-    $residual = [regex]::Match($plainText, $script:TemporaryCitationPattern)
-    if ($residual.Success) {
-        $errors.Add("Unformatted temporary citation text remains in the document: $($residual.Value)")
-    }
-
-    # Gate 3: native citation field count.
     $citationCount = $fields.citation_codes.Count
-    if ($null -ne $Manifest) {
-        $expected = @(Get-OptionalProperty -Object $Manifest -Name 'citations').Count
-        if ($citationCount -ne $expected) {
-            $errors.Add("Expected $expected native ADDIN EN.CITE fields; found $citationCount.")
-        }
-    }
-    elseif ($citationCount -lt 1) {
-        $errors.Add('The document contains no native ADDIN EN.CITE field.')
-    }
-
-    # Gate 4: bibliography.
-    $bibliographyExpected = $false
-    if ($null -ne $Manifest) {
-        $bibliography = Get-OptionalProperty -Object $Manifest -Name 'bibliography'
-        $expectedFlag = Get-OptionalProperty -Object $bibliography -Name 'expected'
-        if ($expectedFlag -is [bool]) { $bibliographyExpected = [bool]$expectedFlag }
-        else { $warnings.Add('The manifest does not declare bibliography.expected, so the bibliography gate was skipped.') }
-    }
-    if ($bibliographyExpected) {
-        if ($fields.bibliography_codes.Count -ne 1) {
-            $errors.Add("Expected exactly one ADDIN EN.REFLIST bibliography field; found $($fields.bibliography_codes.Count).")
-        }
-        else {
-            $length = $fields.bibliography_result_lengths[0]
-            if ($length -le 0) { $errors.Add('The ADDIN EN.REFLIST bibliography field is empty.') }
-        }
-    }
-
-    # Gate 5: every manifest record appears in a traveling library payload together with its author.
-    if ($null -ne $Manifest) {
-        foreach ($citation in @(Get-OptionalProperty -Object $Manifest -Name 'citations')) {
-            $citationId = [string](Get-OptionalProperty -Object $citation -Name 'id')
-            foreach ($target in @(Get-OptionalProperty -Object $citation -Name 'targets')) {
-                $recNumber = ConvertTo-ManifestInteger -Value (Get-OptionalProperty -Object $target -Name 'rec_number') -Label "Citation '$citationId' rec_number"
-                $author = ([string](Get-OptionalProperty -Object $target -Name 'author')).Trim()
-                $element = [string]::Format($script:RecordNumberElementFormat, $recNumber)
-                $matched = $false
-                $recordSeen = $false
-                foreach ($payload in $payloads) {
-                    if ($payload.IndexOf($element, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
-                    $recordSeen = $true
-                    if ($payload.IndexOf($author, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-                        $matched = $true
-                        break
-                    }
-                }
-                if (-not $recordSeen) {
-                    $errors.Add("Citation '$citationId': rec-number $recNumber is absent from every traveling library payload.")
-                }
-                elseif (-not $matched) {
-                    $errors.Add("Citation '$citationId': rec-number $recNumber was found, but the author surname '$author' does not appear in the same traveling library payload.")
-                }
-            }
-        }
-    }
-    else {
-        $warnings.Add('No manifest supplied; record numbers, authors, style and library provenance were not checked.')
-    }
-
-    # Gate 6: no broken-reference placeholders.
-    foreach ($broken in $script:BrokenReferenceStrings) {
-        if ($plainText.Contains($broken)) {
-            $errors.Add("The document text contains a broken citation placeholder: $broken")
-        }
-    }
-
-    # Gate 7: EN.Layout style.
-    $layout = Get-EndNoteLayout
-    $styleName = $null
-    if ($null -eq $layout) {
-        $errors.Add("The $($script:LayoutVariableName) document variable is missing, so EndNote does not own this document's citations.")
-    }
-    else {
-        $styleName = $layout.style
-        if ([string]::IsNullOrWhiteSpace($styleName)) {
-            $errors.Add("The $($script:LayoutVariableName) document variable carries no <Style> element.")
-        }
-        elseif ($null -ne $Manifest) {
-            $manifestStyle = [string](Get-OptionalProperty -Object $Manifest -Name 'style')
-            if ($styleName -ine $manifestStyle) {
-                $errors.Add("The document output style is '$styleName' but the manifest requests '$manifestStyle'.")
-            }
-        }
-    }
-
-    # Gate 8: EN.Libraries provenance.
-    $libraries = Get-EndNoteLibraries -Warnings $warnings
-    if ($libraries.Count -eq 0) {
-        $errors.Add("The $($script:LibrariesVariableName) document variable is missing or lists no library.")
-    }
-    elseif ($null -ne $Manifest) {
-        $recordedIds = New-Object System.Collections.Generic.HashSet[int]
-        foreach ($library in $libraries) {
-            foreach ($recordId in $library.record_ids) { [void]$recordedIds.Add([int]$recordId) }
-        }
-        foreach ($citation in @(Get-OptionalProperty -Object $Manifest -Name 'citations')) {
-            $citationId = [string](Get-OptionalProperty -Object $citation -Name 'id')
-            foreach ($target in @(Get-OptionalProperty -Object $citation -Name 'targets')) {
-                $recNumber = ConvertTo-ManifestInteger -Value (Get-OptionalProperty -Object $target -Name 'rec_number') -Label "Citation '$citationId' rec_number"
-                if (-not $recordedIds.Contains($recNumber)) {
-                    $errors.Add("Citation '$citationId': rec-number $recNumber is absent from the $($script:LibrariesVariableName) record-ids list.")
-                }
-            }
-        }
-    }
+    Add-CoreValidationProblems -Fields $fields -PlainText $plainText -Manifest $Manifest -Errors $errors
+    Add-BibliographyValidationProblems -Fields $fields -Manifest $Manifest -Errors $errors -Warnings $warnings
+    Add-TravelingLibraryValidationProblems -Payloads $payloads -Manifest $Manifest -Errors $errors -Warnings $warnings
+    Add-CitationDisplayValidationProblems -Fields $fields -Manifest $Manifest -Errors $errors
+    $styleName = Get-ValidatedStyleName -Manifest $Manifest -Errors $errors
+    $libraries = @(Get-ValidatedLibraries -Manifest $Manifest -Errors $errors -Warnings $warnings)
 
     return [ordered]@{
         ok            = $errors.Count -eq 0
@@ -1404,7 +1743,18 @@ function Invoke-ConfigureDefaults {
         })
 }
 
-function Invoke-Render {
+function Get-ManifestTargetCount {
+    param([Parameter(Mandatory)][object[]]$Citations)
+    $count = 0
+    foreach ($citation in $Citations) {
+        $count += @(Get-OptionalProperty -Object $citation -Name 'targets').Count
+    }
+    return $count
+}
+
+# Resolve style, library and DOI gates before any GUI process starts. An unknown style,
+# missing record or bad DOI is never allowed to reach EndNote's modal UI.
+function Get-RenderContext {
     if ([string]::IsNullOrWhiteSpace($InputPath)) { throw 'render requires InputPath.' }
     if ([string]::IsNullOrWhiteSpace($OutputPath)) { throw 'render requires OutputPath.' }
     if ([string]::IsNullOrWhiteSpace($ManifestPath)) { throw 'render requires ManifestPath.' }
@@ -1413,12 +1763,15 @@ function Invoke-Render {
     if ([IO.Path]::GetExtension($resolvedInput) -ine $script:DocxExtension) { throw 'InputPath must be a .docx file.' }
     $output = Resolve-OutputFile -Path $OutputPath
 
-    $manifest = Read-Manifest -Path $ManifestPath
+    $resolvedManifest = Resolve-ExistingFile -Path $ManifestPath -Label 'ManifestPath'
+    $manifest = Read-Manifest -Path $resolvedManifest
     Assert-Manifest -Manifest $manifest -LibraryOverride $LibraryPath
 
-    # Both gates run before Word is ever launched: an unknown style or a missing library makes
-    # EndNote open a modal dialog that blocks Application.Run forever.
     $requestedStyle = [string](Get-OptionalProperty -Object $manifest -Name 'style')
+    if ([string]::IsNullOrWhiteSpace($requestedStyle)) {
+        $requestedStyle = Get-DefaultOutputStyle
+        Write-Log -Level INFO -Message "Manifest omits style; using configured default '$requestedStyle'."
+    }
     if (-not [string]::IsNullOrWhiteSpace($Style) -and $Style -ine $requestedStyle) {
         Write-Log -Level WARN -Message "Overriding the manifest style '$requestedStyle' with the -Style argument '$Style'."
         $requestedStyle = $Style
@@ -1434,34 +1787,45 @@ function Invoke-Render {
     }
     $library = Assert-EndNoteLibrary -Path $libraryValue
 
-    $endNoteProcessesBefore = Get-EndNoteProcessIds
-    $endNote = Start-EndNoteWithLibrary -LibraryFile $library.path
-
+    $precheck = Invoke-ManifestPrecheck -LibraryFile $library.path -ManifestFile $resolvedManifest
     $citations = @(Get-OptionalProperty -Object $manifest -Name 'citations')
-    $targetCount = 0
-    foreach ($citation in $citations) { $targetCount += @(Get-OptionalProperty -Object $citation -Name 'targets').Count }
+    $targetCount = Get-ManifestTargetCount -Citations $citations
+    return [ordered]@{
+        input        = $resolvedInput
+        output       = $output
+        manifest     = $manifest
+        manifest_path = $resolvedManifest
+        style        = $styleName
+        library      = $library
+        precheck     = $precheck
+        citations    = $citations
+        target_count = $targetCount
+    }
+}
+
+function Invoke-Render {
+    $context = Get-RenderContext
+
+    $endNoteProcessesBefore = Get-EndNoteProcessIds
+    $endNote = Start-EndNoteWithLibrary -LibraryFile $context.library.path
 
     $fields = $null
+    $authorYearCount = 0
     try {
-        $workingCopy = New-WorkingCopy -SourcePath $resolvedInput -Destination $output
+        $workingCopy = New-WorkingCopy -SourcePath $context.input -Destination $context.output
         Start-Word -DocumentPath $workingCopy
-        Write-Log -Level INFO -Message "Opened a working copy of: $resolvedInput"
+        Write-Log -Level INFO -Message "Opened a working copy of: $($context.input)"
         Assert-CwywTemplateLoaded
-        $null = Set-EndNoteLayout -StyleName $styleName
+        $null = Set-EndNoteLayout -StyleName $context.style
 
-        foreach ($citation in $citations) {
-            $citationId = [string](Get-OptionalProperty -Object $citation -Name 'id')
-            $marker = [string](Get-OptionalProperty -Object $citation -Name 'marker')
-            $temporaryCitation = Get-TemporaryCitationText -Citation $citation
-            Write-Log -Level INFO -Message "Citation '$citationId': replacing marker with $temporaryCitation"
-            $markerRange = Find-UniqueMarkerRange -Marker $marker
-            try { $markerRange.Text = $temporaryCitation }
-            finally { Release-ComObject $markerRange }
-        }
+        $plans = Get-CitationMarkerPlans -Citations $context.citations
+        Set-CitationMarkers -Plans $plans
 
         Invoke-CwywFormat
-        $fields = Wait-CitationFieldCount -Expected $citations.Count
-        Save-DocumentAtomically -Destination $output
+        $fields = Wait-CitationFieldCount -Expected $context.citations.Count
+        $authorYearCount = Set-CitationDisplayFormats -Plans $plans -StyleName $context.style
+        $fields = Wait-CitationFieldCount -Expected $context.citations.Count
+        Save-DocumentAtomically -Destination $context.output
     }
     finally {
         Stop-Word
@@ -1471,12 +1835,14 @@ function Invoke-Render {
     Write-JsonResult ([ordered]@{
             ok                     = $true
             action                 = 'render'
-            input_path             = $resolvedInput
-            output_path            = $output
-            library_path           = $library.path
-            style                  = $styleName
-            citations              = $citations.Count
-            targets                = $targetCount
+            input_path             = $context.input
+            output_path            = $context.output
+            library_path           = $context.library.path
+            style                  = $context.style
+            citations              = $context.citations.Count
+            author_year_citations  = $authorYearCount
+            targets                = $context.target_count
+            doi_verified           = @($context.precheck.resolved | Where-Object { $_.doi_verified }).Count
             native_citation_fields = $fields.citation_codes.Count
             citation_data_fields   = $fields.citation_data_codes.Count
             bibliography_present   = $fields.bibliography_codes.Count -gt 0

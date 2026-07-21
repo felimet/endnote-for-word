@@ -24,7 +24,7 @@ BRIDGE = ROOT / "scripts" / "endnote-word.ps1"
 POWERSHELL_ENV_VARIABLE = "ENDNOTE_WORD_POWERSHELL"
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "endnote-for-word"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5
 
 STUB_RESULT = {"ok": True, "action": "stub", "checks": {"stub_bridge": True}}
@@ -186,6 +186,15 @@ class McpProtocolTests(unittest.TestCase):
             with self.subTest(tool=name):
                 self.assertTrue(annotations[name]["readOnlyHint"])
                 self.assertFalse(annotations[name]["destructiveHint"])
+
+        self.assertTrue(annotations["precheck_endnote_manifest"]["openWorldHint"])
+
+    def test_ris_export_requires_a_doi(self) -> None:
+        tools = {tool["name"]: tool for tool in self.list_tools()}
+        item_schema = tools["export_reference_import_file"]["inputSchema"]["properties"][
+            "references"
+        ]["items"]
+        self.assertIn("doi", item_schema["required"])
 
     def test_ping_and_unknown_method(self) -> None:
         self.assertEqual(self.request({"jsonrpc": "2.0", "id": 3, "method": "ping"})["result"], {})

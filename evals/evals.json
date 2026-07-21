@@ -3,14 +3,16 @@
   "evals": [
     {
       "id": 1,
-      "tags": ["chinese-draft", "single-citation", "cited-pages"],
-      "prompt": "附件 single-manifest.json 是一份 schema v1 manifest。請先用 list_endnote_styles 確認 manifest 指定的輸出樣式確實安裝，再用 search_endnote_library 與 precheck_endnote_manifest 對我的 EndNote library 檢查 manifest 內每一個 rec_number（manifest 內的 library.path 是佔位路徑，請改成我實際的 .enl 路徑）。接著建立一份繁體中文的研究草稿 DOCX，段落中放入 manifest 的 {{CITE:thomsen2023}} 標記，然後 render 成新的輸出檔並執行 manifest-aware validate。交付實際的 DOCX 與 validate JSON，不可只描述步驟，也不可自行打字產生 (作者, 年份) 這種假引用。",
+      "tags": ["chinese-draft", "single-citation", "cited-pages", "doi-required", "silent-automation"],
+      "prompt": "附件 single-manifest.json 是一份 schema v1 manifest。請先用 list_endnote_styles 確認 IEEE 樣式確實安裝，再用 search_endnote_library 與 precheck_endnote_manifest 對我的 EndNote library 檢查 manifest 內每一個 rec_number 與 DOI，且 DOI 必須能由 doi.org 解析（manifest 內的 library.path 是佔位路徑，請改成我實際的 .enl 路徑）。接著建立一份繁體中文的研究草稿 DOCX，段落中放入 manifest 的 {{CITE:thomsen2023}} 標記，然後靜默 render 成新的輸出檔並執行 manifest-aware validate。交付實際的 DOCX 與 validate JSON，不可只描述步驟，也不可自行打字產生假引用。",
       "expected_output": "A real Traditional Chinese DOCX in which the marker has become one genuine ADDIN EN.CITE field carrying a traveling library payload, plus one ADDIN EN.REFLIST bibliography, the cited pages 45-46 rendered by EndNote itself, and a passing validation report.",
       "files": [
         "tests/fixtures/single-manifest.json"
       ],
       "expectations": [
         "Calls list_endnote_styles and precheck_endnote_manifest before rendering, and replaces the placeholder library path instead of rendering against it.",
+        "Blocks before Word opens unless the target DOI matches the bare library DOI and resolves through doi.org.",
+        "Keeps Word hidden and does not surface an EndNote window started by the bridge.",
         "Produces a real output DOCX rather than a plan or an explanation that a file is missing.",
         "Creates exactly one ADDIN EN.CITE field and exactly one ADDIN EN.REFLIST field; no citation text is typed by hand.",
         "Lets EndNote produce the cited pages from the @45-46 temporary citation instead of appending the page range as literal text.",
@@ -19,14 +21,16 @@
     },
     {
       "id": 2,
-      "tags": ["english-draft", "single-citation", "bibliography"],
-      "prompt": "Use the attached single-manifest.json to produce an English methods-section draft DOCX that cites the manifest reference once, then render and validate it. Replace the placeholder library.path with my real .enl library first, confirm the output style with list_endnote_styles, and confirm every rec_number with precheck_endnote_manifest. Return the actual DOCX and the validation JSON. Do not hand-write the in-text citation or the reference list, and do not deliver a plain-text bibliography.",
-      "expected_output": "A real English DOCX with one CWYW-produced ADDIN EN.CITE field, one ADDIN EN.REFLIST bibliography whose result text is non-empty, an EN.Layout document variable naming the requested style, and a passing validation report.",
+      "tags": ["english-draft", "single-citation", "bibliography", "author-year", "doi-required"],
+      "prompt": "Use the attached single-manifest.json to produce an English methods-section draft DOCX with a narrative sentence in which the cited author is the grammatical subject. Change that citation to display=author-year so EndNote produces Author et al. [x], then render and validate it. Replace the placeholder library.path with my real .enl library first, confirm IEEE with list_endnote_styles, and confirm every rec_number and DOI with precheck_endnote_manifest. Return the actual DOCX and validation JSON. Do not hand-write the author name, citation number, DOI link, or reference list.",
+      "expected_output": "A real English DOCX with one CWYW-produced ADDIN EN.CITE field displayed through ENAuthorYearFormat, one ADDIN EN.REFLIST bibliography visibly containing doi: https://doi.org/<DOI>, an EN.Layout document variable naming IEEE, and a passing validation report.",
       "files": [
         "tests/fixtures/single-manifest.json"
       ],
       "expectations": [
         "Verifies the style and the rec_number before opening Word.",
+        "Places the marker where the full narrative author phrase belongs and sets display to author-year, avoiding a duplicated typed author name.",
+        "Validates the visible canonical DOI link and rejects a duplicated resolver prefix.",
         "Delivers a real DOCX file plus the validation JSON.",
         "The bibliography is an ADDIN EN.REFLIST field with non-empty result text, not typed paragraphs.",
         "The EN.Layout document variable records the style from the manifest.",
@@ -107,7 +111,7 @@
       ],
       "expectations": [
         "Uses export_reference_import_file rather than hand-assembling RIS text in the reply.",
-        "Produces UTF-8 RIS with CRLF line endings, TY first and ER last in every record.",
+        "Produces UTF-8 RIS with CRLF line endings, TY first and ER last in every record, and one bare DO value even when the input DOI carried a resolver prefix.",
         "States plainly that the library is read-only for this plugin and that the user performs the import in EndNote.",
         "Explains that new rec_numbers only exist after the user imports, so no manifest can cite them beforehand.",
         "Does not invent rec_numbers for references that are not yet in the library."

@@ -10,12 +10,16 @@ library is ever touched and EndNote does not need to be installed.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 LIBRARY_SCRIPT = ROOT / "scripts" / "endnote_library.py"
@@ -25,6 +29,7 @@ FIXTURE_RIS = FIXTURES / "fixture-references.ris"
 CLI_TIMEOUT_SECONDS = 120
 ABSTRACT_HEAD_LIMIT = 300
 ENL_MAGIC = b"Eds1"
+DOI_API_BASE_ENVIRONMENT_VARIABLE = "ENDNOTE_DOI_API_BASE_URL"
 
 # Column list taken from the build spec. Text columns that EndNote declares with its
 # private collations keep them here so a reader that forgets to register the no-op
@@ -178,6 +183,28 @@ XML_EXPORT = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+class DoiResolverHandler(BaseHTTPRequestHandler):
+    unresolvable: set[str] = set()
+
+    # BaseHTTPRequestHandler requires this exact method name.
+    def do_GET(self) -> None:
+        doi = unquote(self.path.removeprefix("/api/handles/"))
+        payload = (
+            {"responseCode": 100, "message": "DOI does not exist"}
+            if doi.casefold() in self.unresolvable
+            else {"responseCode": 1, "handle": doi, "values": [{"type": "URL"}]}
+        )
+        encoded = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 def _no_op_collation(left: str, right: str) -> int:
     """Ordering stand-in for EndNote's private collations."""
     return (left > right) - (left < right)
@@ -223,18 +250,29 @@ class EndNoteLibraryCliTests(unittest.TestCase):
         cls._directory = tempfile.TemporaryDirectory(prefix="endnote-library-")
         cls.workspace = Path(cls._directory.name)
         cls.library = build_synthetic_library(cls.workspace)
+        cls._doi_server = ThreadingHTTPServer(("127.0.0.1", 0), DoiResolverHandler)
+        cls._doi_thread = threading.Thread(target=cls._doi_server.serve_forever, daemon=True)
+        cls._doi_thread.start()
+        host, port = cls._doi_server.server_address
+        cls.doi_api_base_url = f"http://{host}:{port}/api/handles/"
 
     @classmethod
     def tearDownClass(cls) -> None:
+        cls._doi_server.shutdown()
+        cls._doi_server.server_close()
+        cls._doi_thread.join(timeout=5)
         cls._directory.cleanup()
 
     def run_cli(self, *arguments: str) -> dict:
         """Run the library CLI and return its single JSON object."""
+        environment = os.environ.copy()
+        environment[DOI_API_BASE_ENVIRONMENT_VARIABLE] = self.doi_api_base_url
         completed = subprocess.run(
             [sys.executable, str(LIBRARY_SCRIPT), *arguments],
             capture_output=True,
             text=True,
             encoding="utf-8",
+            env=environment,
             timeout=CLI_TIMEOUT_SECONDS,
         )
         stdout = (completed.stdout or "").strip()
@@ -253,7 +291,7 @@ class EndNoteLibraryCliTests(unittest.TestCase):
         manifest = {
             "schema_version": 1,
             "library": {"path": str(self.library)},
-            "style": "APA 7th",
+            "style": "IEEE",
             "citations": citations,
             "bibliography": {"expected": True},
         }
@@ -278,6 +316,7 @@ class EndNoteLibraryCliTests(unittest.TestCase):
         self.assertEqual(record["issue"], "3")
         self.assertEqual(record["pages"], "45-46")
         self.assertEqual(record["doi"], "10.0000/fixture.0001")
+        self.assertEqual(record["doi_url"], "https://doi.org/10.0000/fixture.0001")
         self.assertLessEqual(len(record["abstract_head"]), ABSTRACT_HEAD_LIMIT)
         self.assertLess(len(record["abstract_head"]), len(LONG_ABSTRACT))
 
@@ -349,14 +388,31 @@ class EndNoteLibraryCliTests(unittest.TestCase):
                 {
                     "id": "single",
                     "marker": "{{CITE:single}}",
-                    "targets": [{"rec_number": 1, "author": "Thomsen", "year": 2023}],
+                    "targets": [
+                        {
+                            "rec_number": 1,
+                            "author": "Thomsen",
+                            "year": 2023,
+                            "doi": "10.0000/fixture.0001",
+                        }
+                    ],
                 },
                 {
                     "id": "merged",
                     "marker": "{{CITE:merged}}",
                     "targets": [
-                        {"rec_number": 2, "author": "Magrin", "year": 2023},
-                        {"rec_number": 3, "author": "Bernhard", "year": 2020},
+                        {
+                            "rec_number": 2,
+                            "author": "Magrin",
+                            "year": 2023,
+                            "doi": "10.0000/fixture.0002",
+                        },
+                        {
+                            "rec_number": 3,
+                            "author": "Bernhard",
+                            "year": 2020,
+                            "doi": "10.0000/fixture.0003",
+                        },
                     ],
                 },
             ],
@@ -366,6 +422,10 @@ class EndNoteLibraryCliTests(unittest.TestCase):
         )
         self.assertTrue(result["ok"], result)
         self.assertEqual(result.get("problems", []), [])
+        self.assertTrue(all(entry["doi_verified"] for entry in result["resolved"]))
+        self.assertTrue(
+            all(entry["doi_url"].startswith("https://doi.org/10.") for entry in result["resolved"])
+        )
 
     def test_precheck_reports_every_problem_not_only_the_first(self) -> None:
         manifest = self.write_manifest(
@@ -374,22 +434,50 @@ class EndNoteLibraryCliTests(unittest.TestCase):
                 {
                     "id": "missingRecord",
                     "marker": "{{CITE:missingRecord}}",
-                    "targets": [{"rec_number": 9999, "author": "Nobody", "year": 1900}],
+                    "targets": [
+                        {
+                            "rec_number": 9999,
+                            "author": "Nobody",
+                            "year": 1900,
+                            "doi": "10.0000/missing",
+                        }
+                    ],
                 },
                 {
                     "id": "wrongAuthor",
                     "marker": "{{CITE:wrongAuthor}}",
-                    "targets": [{"rec_number": 1, "author": "Bernhard", "year": 2023}],
+                    "targets": [
+                        {
+                            "rec_number": 1,
+                            "author": "Bernhard",
+                            "year": 2023,
+                            "doi": "10.0000/fixture.0001",
+                        }
+                    ],
                 },
                 {
                     "id": "wrongYear",
                     "marker": "{{CITE:wrongYear}}",
-                    "targets": [{"rec_number": 2, "author": "Magrin", "year": 1999}],
+                    "targets": [
+                        {
+                            "rec_number": 2,
+                            "author": "Magrin",
+                            "year": 1999,
+                            "doi": "10.0000/fixture.0002",
+                        }
+                    ],
                 },
                 {
                     "id": "trashedRecord",
                     "marker": "{{CITE:trashedRecord}}",
-                    "targets": [{"rec_number": 5, "author": "Deleted", "year": 2018}],
+                    "targets": [
+                        {
+                            "rec_number": 5,
+                            "author": "Deleted",
+                            "year": 2018,
+                            "doi": "10.0000/fixture.0005",
+                        }
+                    ],
                 },
             ],
         )
@@ -410,7 +498,14 @@ class EndNoteLibraryCliTests(unittest.TestCase):
                 {
                     "id": "diacritic",
                     "marker": "{{CITE:diacritic}}",
-                    "targets": [{"rec_number": 4, "author": "Muller", "year": 2019}],
+                    "targets": [
+                        {
+                            "rec_number": 4,
+                            "author": "Muller",
+                            "year": 2019,
+                            "doi": "10.0000/fixture.0004",
+                        }
+                    ],
                 }
             ],
         )
@@ -418,6 +513,78 @@ class EndNoteLibraryCliTests(unittest.TestCase):
             "precheck", "--library", str(self.library), "--manifest", str(manifest)
         )
         self.assertTrue(result["ok"], result)
+
+    def test_precheck_requires_a_doi_for_every_target(self) -> None:
+        manifest = self.write_manifest(
+            "missing-doi-manifest.json",
+            [
+                {
+                    "id": "missingDoi",
+                    "marker": "{{CITE:missingDoi}}",
+                    "targets": [{"rec_number": 1, "author": "Thomsen", "year": 2023}],
+                }
+            ],
+        )
+        result = self.run_cli(
+            "precheck", "--library", str(self.library), "--manifest", str(manifest)
+        )
+        self.assertFalse(result["ok"], result)
+        self.assertIn("missing_doi", {problem["problem"] for problem in result["problems"]})
+
+    def test_precheck_requires_a_bare_manifest_doi(self) -> None:
+        manifest = self.write_manifest(
+            "prefixed-doi-manifest.json",
+            [
+                {
+                    "id": "prefixedDoi",
+                    "marker": "{{CITE:prefixedDoi}}",
+                    "targets": [
+                        {
+                            "rec_number": 1,
+                            "author": "Thomsen",
+                            "year": 2023,
+                            "doi": "https://doi.org/10.0000/fixture.0001",
+                        }
+                    ],
+                }
+            ],
+        )
+        result = self.run_cli(
+            "precheck", "--library", str(self.library), "--manifest", str(manifest)
+        )
+        self.assertFalse(result["ok"], result)
+        self.assertIn(
+            "manifest_doi_not_canonical",
+            {problem["problem"] for problem in result["problems"]},
+        )
+
+    def test_precheck_rejects_a_doi_the_proxy_does_not_resolve(self) -> None:
+        manifest = self.write_manifest(
+            "unresolvable-doi-manifest.json",
+            [
+                {
+                    "id": "unresolvableDoi",
+                    "marker": "{{CITE:unresolvableDoi}}",
+                    "targets": [
+                        {
+                            "rec_number": 1,
+                            "author": "Thomsen",
+                            "year": 2023,
+                            "doi": "10.0000/fixture.0001",
+                        }
+                    ],
+                }
+            ],
+        )
+        DoiResolverHandler.unresolvable.add("10.0000/fixture.0001")
+        try:
+            result = self.run_cli(
+                "precheck", "--library", str(self.library), "--manifest", str(manifest)
+            )
+        finally:
+            DoiResolverHandler.unresolvable.clear()
+        self.assertFalse(result["ok"], result)
+        self.assertIn("doi_not_resolvable", {problem["problem"] for problem in result["problems"]})
 
     # -- failure surfaces --------------------------------------------------------
 
@@ -449,7 +616,7 @@ class EndNoteLibraryCliTests(unittest.TestCase):
                 "volume": "12",
                 "issue": "3",
                 "pages": "45-46",
-                "doi": "10.0000/fixture.0001",
+                "doi": "https://doi.org/https://doi.org/10.0000/fixture.0001",
                 "url": "https://doi.org/10.0000/fixture.0001",
                 "abstract": "Synthetic abstract that describes no real study.",
                 "keywords": ["fixture", "automation"],

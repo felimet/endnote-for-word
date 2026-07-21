@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "style": {
-    "default_output_style": "APA 7th"
+    "default_output_style": "IEEE"
   },
   "temporary_citation": {
     "open": "{",
@@ -11,12 +11,21 @@
   },
   "formatting": {
     "instant_formatting": true,
-    "link_in_text_to_bibliography": false
+    "link_in_text_to_bibliography": false,
+    "silent_word_and_endnote": true
+  },
+  "doi": {
+    "required": true,
+    "verify_before_citing": true,
+    "resolver": "https://doi.org/",
+    "bibliography_prefix": "doi: https://doi.org/"
   },
   "validation": {
     "reject_unresolved_markers": true,
     "reject_residual_temporary_citations": true,
     "require_native_en_cite_fields": true,
-    "require_native_reflist_field": true
+    "require_native_reflist_field": true,
+    "require_visible_verified_doi_links": true,
+    "reject_duplicate_doi_resolver_prefixes": true
   }
 }

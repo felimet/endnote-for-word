@@ -98,6 +98,7 @@ try {
             "$PythonEnvironmentVariable to the full path of a python.exe, then start the " +
             "server again.")
     }
+    Set-Item -Path "env:$PythonEnvironmentVariable" -Value $python
 
     & $python $server
     exit $LASTEXITCODE

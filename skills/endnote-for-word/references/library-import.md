@@ -107,7 +107,7 @@ MCP tool: `export_reference_import_file`. It runs in-process, not as a subproces
 annotated as a write tool because it creates a file on disk. It writes only to the path you
 give it.
 
-Input is a JSON array of reference objects. Empty input is rejected rather than silently
+Input is a JSON array of reference objects. Every record requires a DOI. Empty input is rejected rather than silently
 producing an empty file:
 
 ```json
@@ -150,7 +150,7 @@ Field intent, one row per input key:
 | `volume` | `VL` | |
 | `issue` | `IS` | |
 | `pages` | `SP`, `EP` | A range such as `3401-3412` is split into `SP  - 3401` and `EP  - 3412`. A value with no range separator is written as a single `SP`. |
-| `doi` | `DO` | Lands in `electronic_resource_number` after import. |
+| `doi` | `DO` | Required. Resolver URLs and repeated resolver prefixes are normalised to one bare DOI before export. |
 | `url` | `UR` | |
 | `abstract` | `AB` | |
 | `keywords[]` | `KW` | One tag per keyword. |
@@ -204,7 +204,8 @@ so that a search never dumps whole abstracts into a conversation:
  "abstract_head": "..."}
 ```
 
-Then write the manifest entry using `rec_number`, `first_author_surname` and `year` exactly
+Then write the manifest entry using `rec_number`, `first_author_surname`, `year`, and the
+bare `doi` exactly
 as returned, and run the pre-check before rendering:
 
 ```console
@@ -213,7 +214,7 @@ python scripts\endnote_library.py precheck --library "<LIBRARY>.enl" --manifest 
 
 `precheck` verifies, for every target, that the record exists, is not in the trash, that its
 first author surname matches the manifest `author` case-insensitively and accent-tolerantly,
-and that its year matches. It reports every problem it finds, not just the first one, so a
+that its year and bare DOI match, and that the DOI resolves through doi.org. It reports every problem it finds, not just the first one, so a
 manifest with three bad targets takes one round trip to fix rather than three.
 
 This is the step that prevents the "select matching reference" modal dialog described in
@@ -225,12 +226,15 @@ watchdog kills it.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Export refuses to run | The references array is empty | Supply at least one reference object. An empty RIS file has no legitimate use here. |
+| Export refuses to run with a DOI error | The DOI is empty or malformed | Supply a valid DOI. A DOI URL is accepted and normalised, but the RIS `DO` tag is always bare. |
 | Export refuses to run and names an index | That reference has neither a `title` nor any `authors`, so nothing identifies it after import | Fill in at least one of the two before exporting. |
 | EndNote imports 0 references | Wrong import filter, or a malformed first tag | Confirm the filter is the Reference Manager RIS filter and that every record starts with `TY`. |
 | Author names arrive mangled | Text translation was not set to Unicode UTF-8 | Delete the imported records, set UTF-8, import again. |
 | The new record is not found by search | The import went into a different library | Confirm which library was open during the import, and that it is the same path the manifest names. |
 | Two records match the search | The reference already existed and step 1 was skipped | Have the user merge or delete the duplicate in EndNote, then re-query. |
 | `precheck` reports an author mismatch | The manifest carries a full name or a second author instead of the first author surname | Use `first_author_surname` from the search result verbatim. |
+| `precheck` reports `library_doi_not_canonical` | The EndNote DOI field contains `doi:` or a resolver URL | Edit the EndNote record so its DOI field contains only the bare DOI, then run precheck again. |
+| `precheck` reports `doi_not_resolvable` | doi.org has no successful handle for the DOI | Correct the DOI from an authoritative source. Never cite the record while this gate fails. |
 | A newly imported record cannot be read | EndNote is mid-write and holds the SQLite file | Let the import finish, then re-run the query. The reader copies the file, so a partially written source produces a read error rather than bad data. |
 
 ## What is deliberately not attempted

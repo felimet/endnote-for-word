@@ -34,6 +34,10 @@
 | `validate` exits 3 on the citation count | A merged citation was counted twice | Apply the counting rule, subtracting `ADDIN EN.CITE.DATA` fields. See section 11. |
 | `validate` exits 3 on style | `EN.Layout` style does not equal the manifest style | Run `set-style`, then validate again. |
 | Manifest rejected for a `prefix` key | Prefix and excluded author syntax are not supported in v1 | Both open modal dialogs. See `temporary-citations.md`. |
+| Precheck reports `library_doi_not_canonical` | The EndNote DOI field contains `doi:` or a resolver URL | Keep only the bare DOI in EndNote, then rerun precheck. |
+| Precheck reports `doi_not_resolvable` | doi.org does not return a successful handle | Correct the DOI from an authoritative source; do not render while the gate fails. |
+| Bibliography validation reports a missing DOI link | The active style's Bibliography Template does not print `doi: https://doi.org/DOI` for that reference type | Correct the style with Save As, select the corrected style, rerender, and validate. |
+| Bibliography validation reports a duplicated resolver | A prefixed EndNote DOI was combined with the style's resolver literal | Replace the record DOI with its bare value and rerender. |
 | MCP client reports a protocol parse error | Something wrote to stdout that was not JSON-RPC | Protocol output on stdout must be JSON only; all diagnostics belong on stderr. |
 | `render` reports fewer citations than the manifest declares | `ENFormatBibliography` did not finish inside the automation timeout | Raise `ENDNOTE_AUTOMATION_TIMEOUT_MS`, re-run, and check for a dialog. |
 | Bibliography is missing after a style switch | `ENFormatBibliography` was interrupted | Run `update`, then validate again. |

@@ -3,7 +3,7 @@
   "library": {
     "path": "C:\\EndNoteLibraries\\FixtureLibrary.enl"
   },
-  "style": "APA 7th",
+  "style": "IEEE",
   "citations": [
     {
       "id": "single",
@@ -12,9 +12,11 @@
         {
           "rec_number": 1,
           "author": "Thomsen",
-          "year": 2023
+          "year": 2023,
+          "doi": "10.0000/fixture.0001"
         }
-      ]
+      ],
+      "display": "author-year"
     },
     {
       "id": "citedPages",
@@ -23,9 +25,11 @@
         {
           "rec_number": 2,
           "author": "Magrin",
-          "year": 2023
+          "year": 2023,
+          "doi": "10.0000/fixture.0002"
         }
       ],
+      "display": "default",
       "pages": "45-46"
     },
     {
@@ -35,14 +39,17 @@
         {
           "rec_number": 2,
           "author": "Magrin",
-          "year": 2023
+          "year": 2023,
+          "doi": "10.0000/fixture.0002"
         },
         {
           "rec_number": 3,
           "author": "Bernhard",
-          "year": 2020
+          "year": 2020,
+          "doi": "10.0000/fixture.0003"
         }
-      ]
+      ],
+      "display": "default"
     }
   ],
   "bibliography": {
