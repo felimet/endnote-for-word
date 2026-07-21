@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 import sys
 import zipfile
 from pathlib import Path
@@ -11,9 +13,18 @@ from pathlib import Path
 
 # Build artefacts, caches and the scratch workspace the skill uses for intermediate DOCX
 # files never belong in a distributable archive.
-EXCLUDED_DIRS = {".git", "__pycache__", ".pytest_cache", "dist", "endnote-for-word-workspace"}
+EXCLUDED_DIRS = {
+    ".codex-test-temp",
+    ".git",
+    "__pycache__",
+    ".pytest_cache",
+    "dist",
+    "endnote-for-word-workspace",
+}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 EXCLUDED_PREFIX_PATHS = (("evals", "results"),)
+ARCHIVE_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+ARCHIVE_FILE_MODE = (stat.S_IFREG | 0o644) << 16
 
 PLUGIN_NAME = "endnote-for-word"
 DEFAULT_ARCHIVE_NAME = f"{PLUGIN_NAME}-plugin.zip"
@@ -29,6 +40,8 @@ def should_include(path: Path, root: Path) -> bool:
 def package(root: Path, output: Path) -> str:
     root = root.resolve()
     output = output.resolve()
+    sidecar = output.with_suffix(output.suffix + ".sha256")
+    generated_outputs = {output, sidecar}
     required = [
         root / ".codex-plugin" / "plugin.json",
         root / ".claude-plugin" / "plugin.json",
@@ -45,13 +58,29 @@ def package(root: Path, output: Path) -> str:
         raise FileNotFoundError("Missing required plugin files: " + ", ".join(missing))
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for path in sorted(root.rglob("*")):
-            if path.is_file() and should_include(path, root) and path.resolve() != output:
-                archive.write(path, Path(root.name) / path.relative_to(root))
+        for directory, directories, filenames in os.walk(root):
+            parent = Path(directory)
+            directories[:] = [
+                name for name in sorted(directories) if should_include(parent / name, root)
+            ]
+            for name in sorted(filenames):
+                path = parent / name
+                if not should_include(path, root) or path.resolve() in generated_outputs:
+                    continue
+                info = zipfile.ZipInfo(
+                    (Path(PLUGIN_NAME) / path.relative_to(root)).as_posix(),
+                    date_time=ARCHIVE_TIMESTAMP,
+                )
+                info.create_system = 3
+                info.external_attr = ARCHIVE_FILE_MODE
+                archive.writestr(
+                    info,
+                    path.read_bytes(),
+                    compress_type=zipfile.ZIP_DEFLATED,
+                    compresslevel=9,
+                )
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
-    output.with_suffix(output.suffix + ".sha256").write_text(
-        f"{digest}  {output.name}\n", encoding="ascii"
-    )
+    sidecar.write_text(f"{digest}  {output.name}\n", encoding="ascii")
     return digest
 
 
