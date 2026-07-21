@@ -2,10 +2,11 @@
 
 [繁體中文](README-zhTW.md)
 
-An installable AI Agent skill, Codex/Claude plugin, and MCP server that inserts genuine EndNote Cite While You Write (CWYW) citations and bibliographies into Microsoft Word documents, driven by a reviewable JSON manifest.
+EndNote for Word is an installable AI citation-management toolkit for Microsoft Word: a Claude Code, Claude Desktop, Codex, and ChatGPT Desktop skill/plugin plus MCP server that finds DOI-verified research papers, exports RIS for new EndNote libraries, and creates genuine EndNote Cite While You Write (CWYW) IEEE citations and bibliographies.
 
 ## What this tool does
 
+- Guides AI Agents to find peer-reviewed papers with their available scholarly-search or web tools, verify the metadata and DOI, and export EndNote-compatible RIS for users who do not have a library yet.
 - Replaces `{{CITE:id}}` markers in a DOCX with real CWYW citations, so every citation becomes an `ADDIN EN.CITE` field carrying an EndNote traveling library, and the bibliography becomes an `ADDIN EN.REFLIST` field.
 - Never types citation text, never fabricates field codes in OOXML, and never passes off a plain-text reference list as a real bibliography.
 - Reads your `.enl` library read-only so an agent can search for references and confirm every record number before Word is ever opened.
@@ -57,7 +58,7 @@ If you want to use EndNote for Word in Claude Code, Claude Desktop, Codex, or Ch
 Install or upgrade the EndNote for Word toolkit from https://github.com/felimet/endnote-for-word. Detect my available terminal and use PowerShell 7, Windows PowerShell 5.1, Bash on Windows including Git Bash, or CMD; prefer pwsh.exe when it exists and fall back to powershell.exe. From WSL Bash, invoke the Windows-side executable rather than Linux pwsh. If neither is available, stop and tell me to install PowerShell using https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows. Verify Microsoft Word desktop plus desktop EndNote with the Cite While You Write add-in, install the portable skill, register the local stdio MCP server, run the probe and the repository tests, preserve existing agent configuration, and report every changed file. Do not claim success unless the probe reports cwyw_macro_callable true and validation returns ok: true.
 ```
 
-Then tell your agent which DOCX to edit and which `.enl` library to cite from. IEEE is used unless you explicitly request another installed style.
+If you have no library yet, ask the Agent to find a paper and export RIS first, as shown in the [quick test prompt](#quick-test-prompt). Otherwise, provide the DOCX and `.enl` paths directly. IEEE is used unless you explicitly request another installed style.
 
 Platform-specific skill locations and MCP configuration are documented in the [installation matrix](skills/endnote-for-word/references/installation-matrix.md).
 

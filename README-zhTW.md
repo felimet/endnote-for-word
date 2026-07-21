@@ -2,10 +2,11 @@
 
 [English](README.md)
 
-可安裝的 AI Agent skill、Codex/Claude plugin 與 MCP server，依可審閱的 JSON manifest，在 Microsoft Word 文件中建立真正的 EndNote Cite While You Write (CWYW) 引用與參考文獻清單。
+EndNote for Word 是 Microsoft Word 的 AI 引用管理工具包，提供 Claude Code、Claude Desktop、Codex、ChatGPT Desktop skill/plugin 與 MCP server，可搜尋並驗證具 DOI 的研究論文、為尚無 EndNote library 的使用者匯出 RIS，並建立真正的 EndNote Cite While You Write (CWYW) IEEE 引用與參考文獻清單。
 
 ## 本工具做什麼
 
+- 引導 AI Agent 使用可用的學術搜尋或網路工具尋找同儕審查論文、核對 metadata 與 DOI，並為尚未建立 library 的使用者匯出 EndNote 相容 RIS。
 - 將 DOCX 中的 `{{CITE:id}}` 標記換成真正的 CWYW 引用：每一筆引用都是帶有 EndNote traveling library 的 `ADDIN EN.CITE` 欄位，參考文獻清單則是 `ADDIN EN.REFLIST` 欄位。
 - 不手打引用文字、不在 OOXML 中偽造欄位碼，也不以純文字清單假冒參考文獻清單。
 - 以唯讀方式讀取 `.enl` 書目庫，讓 Agent 在開啟 Word 之前就能搜尋文獻並確認每一個紀錄編號。
@@ -57,7 +58,7 @@ pwsh.exe -NoProfile -ExecutionPolicy Bypass -File scripts/endnote-word.ps1 -Acti
 從 https://github.com/felimet/endnote-for-word 安裝或升級 EndNote for Word toolkit。偵測我目前可用的終端機，並使用 PowerShell 7、Windows PowerShell 5.1、Windows 上的 Bash，包括 Git Bash，或 CMD；有 pwsh.exe 時優先使用，否則退回 powershell.exe。在 WSL Bash 中呼叫 Windows 側執行檔，不使用 Linux pwsh。兩者皆不存在時，停止執行並提示我依 https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows 安裝 PowerShell。確認 Microsoft Word 桌面版，以及安裝了 Cite While You Write 增益集的桌面版 EndNote 均可使用；安裝可攜式 skill、註冊本機 stdio MCP server、執行 probe 與 repository 測試、保留既有 Agent 設定，並列出所有異動檔案。probe 未回報 cwyw_macro_callable 為 true，或 validation 未回傳 ok: true 時，不得宣稱完成。
 ```
 
-再告訴 Agent 要處理的 DOCX 與要引用的 `.enl` 書目庫。若未另外指定，使用 IEEE。
+若尚無 library，先依[快速測試 Prompt](#快速測試-prompt)請 Agent 搜尋論文並匯出 RIS；若已有 library，直接提供 DOCX 與 `.enl` 路徑。若未另外指定，使用 IEEE。
 
 各平台 skill 位置與 MCP 設定見[安裝矩陣](skills/endnote-for-word/references/installation-matrix.md)。
 

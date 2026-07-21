@@ -1,6 +1,6 @@
 ---
 name: endnote-for-word
-description: "Insert, format, update, restyle, inspect, or validate EndNote citations and bibliographies in Microsoft Word DOCX using genuine EndNote Cite While You Write (CWYW) automation. Use for IEEE citations, DOI-required bibliographies, visible https://doi.org links, Default Format [x], Display as Author (Year) forms such as Author et al. [x], silent Word and EndNote automation, ADDIN EN.CITE fields with traveling library payloads, ADDIN EN.REFLIST reference lists, rec-number lookups inside an .enl library, output-style switching, merged citations, cited pages, RIS imports, and repairs that must avoid typed citation text, fabricated field codes, or fake plain-text bibliographies."
+description: "Find DOI-verified research papers with the Agent's available scholarly-search or web tools; export EndNote-compatible RIS for users without a library; and insert, format, update, restyle, inspect, or validate genuine EndNote Cite While You Write (CWYW) citations and bibliographies in Microsoft Word DOCX. Use for IEEE citations, visible https://doi.org links, Default Format [x], Display as Author (Year) forms such as Author et al. [x], silent Word and EndNote automation, ADDIN EN.CITE fields with traveling library payloads, ADDIN EN.REFLIST reference lists, rec-number lookups, output-style switching, merged citations, cited pages, and repairs that must avoid typed citation text, fabricated field codes, or fake plain-text bibliographies."
 license: MIT
 metadata:
   author: Jia-Ming Zhou (Felimet)
