@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: CI
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Run offline tests
+        shell: pwsh
+        run: ./tests/run-tests.ps1
+
+      - name: Build plugin package
+        shell: pwsh
+        run: python ./scripts/package_plugin.py
+
+      - name: Upload plugin package
+        uses: actions/upload-artifact@v7
+        with:
+          name: endnote-for-word-plugin
+          path: |
+            dist/endnote-for-word-plugin.zip
+            dist/endnote-for-word-plugin.zip.sha256
+          if-no-files-found: error
