@@ -92,7 +92,7 @@ FIXTURE_RECORDS = [
         "id": 2,
         "trash_state": 0,
         "reference_type": 17,
-        "author": "Magrin, Luca",
+        "author": "Luca Magrin",
         "year": "2023",
         "title": "Synthetic fixture record two for merged citation tests",
         "pages": "1-14",
@@ -285,6 +285,7 @@ class EndNoteLibraryCliTests(unittest.TestCase):
         by_title = self.run_cli("search", "--library", str(self.library), "--query", "MERGED CITATION")
         self.assertTrue(by_title["ok"], by_title)
         self.assertEqual([record["rec_number"] for record in by_title["references"]], [2])
+        self.assertEqual(by_title["references"][0]["first_author_surname"], "Magrin")
 
         by_abstract = self.run_cli(
             "search", "--library", str(self.library), "--query", "accent tolerant"

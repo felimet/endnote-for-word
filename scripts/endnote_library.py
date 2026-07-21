@@ -182,12 +182,15 @@ def split_authors(author_block: Any) -> list[str]:
 
 
 def author_surname(author: str) -> str:
-    """Return the surname of a single ``Last, First`` author entry.
+    """Return the surname of one ``Last, First`` or ``First Last`` author entry.
 
     EndNote stores corporate authors with a trailing comma ("World Health Organization,"),
     which this handles naturally because everything before the first comma is the surname.
     """
-    return _collapse_whitespace(_text(author).split(",")[0])
+    name = _collapse_whitespace(_text(author))
+    if "," in name:
+        return name.split(",", 1)[0]
+    return name.rsplit(" ", 1)[-1]
 
 
 def normalize_name(value: Any) -> str:
