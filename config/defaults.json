@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "style": {
+    "default_output_style": "APA 7th"
+  },
+  "temporary_citation": {
+    "open": "{",
+    "close": "}",
+    "record_prefix": "#",
+    "pages_prefix": "@"
+  },
+  "formatting": {
+    "instant_formatting": true,
+    "link_in_text_to_bibliography": false
+  },
+  "validation": {
+    "reject_unresolved_markers": true,
+    "reject_residual_temporary_citations": true,
+    "require_native_en_cite_fields": true,
+    "require_native_reflist_field": true
+  }
+}

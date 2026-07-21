@@ -1,0 +1,42 @@
+{
+  "name": "endnote-for-word",
+  "version": "1.0.0",
+  "description": "Insert and validate native EndNote CWYW citations and bibliographies in Word documents, driven by a reviewable JSON manifest.",
+  "author": {
+    "name": "Jia-Ming Zhou (Felimet)"
+  },
+  "license": "MIT",
+  "keywords": [
+    "endnote",
+    "cite-while-you-write",
+    "cwyw",
+    "citations",
+    "bibliography",
+    "microsoft-word",
+    "academic-writing",
+    "mcp",
+    "claude",
+    "codex",
+    "chatgpt"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "EndNote for Word",
+    "shortDescription": "Native EndNote CWYW citations and bibliographies in Word.",
+    "longDescription": "Drives desktop EndNote Cite While You Write through Word COM automation to produce genuine ADDIN EN.CITE citation fields with a traveling library and an ADDIN EN.REFLIST bibliography, plus read-only library search, manifest pre-checks, output-style switching, and structural validation.",
+    "developerName": "Jia-Ming Zhou (Felimet)",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Search my EndNote library and cite these references in this Word document.",
+      "Replace the citation markers in this DOCX with native EndNote CWYW fields.",
+      "Change this document's EndNote output style to IEEE and rebuild the bibliography.",
+      "Validate the EndNote citations and bibliography in this Word file."
+    ],
+    "brandColor": "#0078D4"
+  }
+}

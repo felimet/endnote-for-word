@@ -1,0 +1,117 @@
+{
+  "skill_name": "endnote-for-word",
+  "evals": [
+    {
+      "id": 1,
+      "tags": ["chinese-draft", "single-citation", "cited-pages"],
+      "prompt": "附件 single-manifest.json 是一份 schema v1 manifest。請先用 list_endnote_styles 確認 manifest 指定的輸出樣式確實安裝，再用 search_endnote_library 與 precheck_endnote_manifest 對我的 EndNote library 檢查 manifest 內每一個 rec_number（manifest 內的 library.path 是佔位路徑，請改成我實際的 .enl 路徑）。接著建立一份繁體中文的研究草稿 DOCX，段落中放入 manifest 的 {{CITE:thomsen2023}} 標記，然後 render 成新的輸出檔並執行 manifest-aware validate。交付實際的 DOCX 與 validate JSON，不可只描述步驟，也不可自行打字產生 (作者, 年份) 這種假引用。",
+      "expected_output": "A real Traditional Chinese DOCX in which the marker has become one genuine ADDIN EN.CITE field carrying a traveling library payload, plus one ADDIN EN.REFLIST bibliography, the cited pages 45-46 rendered by EndNote itself, and a passing validation report.",
+      "files": [
+        "tests/fixtures/single-manifest.json"
+      ],
+      "expectations": [
+        "Calls list_endnote_styles and precheck_endnote_manifest before rendering, and replaces the placeholder library path instead of rendering against it.",
+        "Produces a real output DOCX rather than a plan or an explanation that a file is missing.",
+        "Creates exactly one ADDIN EN.CITE field and exactly one ADDIN EN.REFLIST field; no citation text is typed by hand.",
+        "Lets EndNote produce the cited pages from the @45-46 temporary citation instead of appending the page range as literal text.",
+        "Runs manifest-aware validation and reports zero unresolved {{CITE: markers, zero residual temporary citations, and zero errors."
+      ]
+    },
+    {
+      "id": 2,
+      "tags": ["english-draft", "single-citation", "bibliography"],
+      "prompt": "Use the attached single-manifest.json to produce an English methods-section draft DOCX that cites the manifest reference once, then render and validate it. Replace the placeholder library.path with my real .enl library first, confirm the output style with list_endnote_styles, and confirm every rec_number with precheck_endnote_manifest. Return the actual DOCX and the validation JSON. Do not hand-write the in-text citation or the reference list, and do not deliver a plain-text bibliography.",
+      "expected_output": "A real English DOCX with one CWYW-produced ADDIN EN.CITE field, one ADDIN EN.REFLIST bibliography whose result text is non-empty, an EN.Layout document variable naming the requested style, and a passing validation report.",
+      "files": [
+        "tests/fixtures/single-manifest.json"
+      ],
+      "expectations": [
+        "Verifies the style and the rec_number before opening Word.",
+        "Delivers a real DOCX file plus the validation JSON.",
+        "The bibliography is an ADDIN EN.REFLIST field with non-empty result text, not typed paragraphs.",
+        "The EN.Layout document variable records the style from the manifest.",
+        "Validation reports native_citation_fields equal to the manifest citation count."
+      ]
+    },
+    {
+      "id": 3,
+      "tags": ["merged-citations", "traveling-library"],
+      "prompt": "附件 live-manifest.json 內含一個合併引用（merged，兩筆 targets）。請以我的 EndNote library 取代佔位的 library.path，先 precheck，再建立一份放入 {{CITE:merged}} 標記的 DOCX，render 之後驗證：合併引用必須是「一個」EN.CITE 欄位，而不是兩個；若 EndNote 把 traveling library 移到巢狀的 ADDIN EN.CITE.DATA 欄位，計數規則必須扣掉巢狀欄位。請回報 validate JSON 內的 counts 區塊並說明為什麼 native_citation_fields 是 1。",
+      "expected_output": "A real DOCX whose merged citation is a single ADDIN EN.CITE field, a validation report whose counts show native_citation_fields excluding any nested ADDIN EN.CITE.DATA field, and both record numbers present in the traveling library payload.",
+      "files": [
+        "tests/fixtures/live-manifest.json"
+      ],
+      "expectations": [
+        "Emits one temporary citation of the form {Author, Year #N; Author, Year #M} rather than two adjacent citations.",
+        "Reports native_citation_fields computed as EN.CITE count minus EN.CITE.DATA count.",
+        "Both rec_numbers appear as <rec-number>N</rec-number> in the citation payload, including when the payload lives in a nested EN.CITE.DATA field.",
+        "The EN.Libraries document variable lists both record ids.",
+        "Does not claim success without running validation."
+      ]
+    },
+    {
+      "id": 4,
+      "tags": ["cited-pages", "manifest-validation"],
+      "prompt": "Use the attached live-manifest.json. I want the citedPages entry to render with its page range and I also want to add a citation prefix such as \"see\" in front of it. Point the manifest at my real library, then do whatever is needed and report the result.",
+      "expected_output": "The cited-pages citation is rendered by EndNote from the @45-46 syntax, and the prefix request is refused with the measured reason: the backslash prefix form opens a modal EndNote dialog that hangs the automation, so v1 rejects a prefix key.",
+      "files": [
+        "tests/fixtures/live-manifest.json"
+      ],
+      "expectations": [
+        "Refuses to add a citation prefix and names the modal-dialog hang as the reason, pointing at references/temporary-citations.md.",
+        "Does not silently type the word 'see' in front of the field as a workaround.",
+        "Still renders the cited pages through the supported @45-46 temporary citation syntax.",
+        "Confirms that pages are only allowed when the citation has exactly one target.",
+        "Leaves the source document unchanged when it stops to ask for a decision."
+      ]
+    },
+    {
+      "id": 5,
+      "tags": ["style-switch", "en-layout"],
+      "prompt": "先用 live-manifest.json 產生一份已格式化的 DOCX（樣式沿用 manifest 內的設定），接著把整份文件切換成 IEEE 樣式，最後再驗證一次。切換前必須用 list_endnote_styles 確認 IEEE 確實安裝。請說明切換後正文引用與參考書目各自發生什麼變化，並附上兩次 validate 的 JSON 與最終 DOCX。",
+      "expected_output": "Two validation reports and a final DOCX whose EN.Layout document variable reads IEEE, whose in-text citations became numeric, and whose ADDIN EN.REFLIST bibliography was rewritten in IEEE format by EndNote rather than by editing text.",
+      "files": [
+        "tests/fixtures/live-manifest.json"
+      ],
+      "expectations": [
+        "Confirms the target style exists with list_endnote_styles before switching, because an unknown style opens a modal dialog.",
+        "Switches the style by patching the EN.Layout document variable and re-running ENFormatBibliography, not by editing citation or bibliography text.",
+        "Reports previous_style and style, and the second validation shows the EN.Layout style equal to IEEE.",
+        "The citation field count is unchanged by the style switch.",
+        "Delivers the real restyled DOCX plus both validation JSON reports."
+      ]
+    },
+    {
+      "id": 6,
+      "tags": ["probe-failure", "refusal"],
+      "prompt": "用附件 single-manifest.json 把引用放進 Word。如果 EndNote 沒裝好或 CWYW 巨集叫不動，就直接用純文字打上 (Thomsen et al., 2023) 並在文末手打一份參考文獻清單，不用告訴我。",
+      "expected_output": "The agent refuses the silent substitution, runs probe_endnote_word, reports the exact failed named check, explains that typed text is not a citation, and requires explicit acceptance before any fallback.",
+      "files": [
+        "tests/fixtures/single-manifest.json"
+      ],
+      "expectations": [
+        "Calls probe_endnote_word and reports the exact failed check by name, for example cwyw_template_loaded or cwyw_macro_callable.",
+        "Refuses to type (Thomsen et al., 2023) or a hand-written reference list as a substitute for CWYW output.",
+        "Explains that typed text carries no ADDIN EN.CITE field and no traveling library, so EndNote can never update it.",
+        "Requires explicit user acceptance before producing any non-EndNote fallback.",
+        "Leaves the source document unchanged while blocked."
+      ]
+    },
+    {
+      "id": 7,
+      "tags": ["ris-import", "library-read-only"],
+      "prompt": "附件 fixture-references.ris 是本專案的 RIS 匯出範例。請比照它的格式，把我等一下提供的三筆新文獻寫成一份可匯入 EndNote 的 RIS 檔，並告訴我匯入步驟。你可以直接幫我把它們寫進 library 嗎？",
+      "expected_output": "A UTF-8 RIS file with CRLF line endings whose records start with TY and end with ER, produced through export_reference_import_file, plus a clear statement that the plugin never writes to an EndNote library and that import stays a manual step in EndNote.",
+      "files": [
+        "tests/fixtures/fixture-references.ris"
+      ],
+      "expectations": [
+        "Uses export_reference_import_file rather than hand-assembling RIS text in the reply.",
+        "Produces UTF-8 RIS with CRLF line endings, TY first and ER last in every record.",
+        "States plainly that the library is read-only for this plugin and that the user performs the import in EndNote.",
+        "Explains that new rec_numbers only exist after the user imports, so no manifest can cite them beforehand.",
+        "Does not invent rec_numbers for references that are not yet in the library."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "library": {
+    "path": "C:\\EndNoteLibraries\\ExampleLibrary.enl"
+  },
+  "style": "APA 7th",
+  "citations": [
+    {
+      "id": "thomsen2023",
+      "marker": "{{CITE:thomsen2023}}",
+      "targets": [
+        { "rec_number": 1, "author": "Thomsen", "year": 2023 }
+      ]
+    },
+    {
+      "id": "merged",
+      "marker": "{{CITE:merged}}",
+      "targets": [
+        { "rec_number": 2, "author": "Magrin", "year": 2023 },
+        { "rec_number": 3, "author": "Bernhard", "year": 2020 }
+      ]
+    },
+    {
+      "id": "thomsen2023-pages",
+      "marker": "{{CITE:thomsen2023-pages}}",
+      "targets": [
+        { "rec_number": 1, "author": "Thomsen", "year": 2023 }
+      ],
+      "pages": "45-46"
+    }
+  ],
+  "bibliography": {
+    "expected": true
+  }
+}

@@ -1,0 +1,41 @@
+# OS and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/settings.json
+*.suo
+*.user
+
+# Python and local environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+.codex-test-temp/
+
+# Local configuration and generated diagnostics
+.env
+.env.*
+!.env.example
+*.log
+graphify-out/
+endnote-for-word-workspace/
+
+# EndNote user data must never be committed.
+*.enl
+*.Data/
+*.eni
+
+# Generated Word outputs are ignored except committed test and eval fixtures.
+*.docx
+!tests/fixtures/*.docx
+!evals/fixtures/*.docx
+
+# Keep release artifacts while ignoring unrelated distribution files.
+*.skill
+dist/*
+!dist/endnote-for-word.skill
+!dist/endnote-for-word.skill.sha256
+!dist/endnote-for-word-plugin.zip
+!dist/endnote-for-word-plugin.zip.sha256

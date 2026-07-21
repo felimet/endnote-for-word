@@ -1,0 +1,4 @@
+# Runtime uses only the Python standard library, plus PowerShell 7 (pwsh.exe) or
+# Windows PowerShell 5.1 (powershell.exe).
+# Microsoft Word desktop and desktop EndNote with the Cite While You Write add-in
+# are external prerequisites and are not installed by this repository.

@@ -1,0 +1,6 @@
+interface:
+  display_name: "EndNote for Word"
+  short_description: "Create native EndNote CWYW citations and bibliographies in DOCX"
+  default_prompt: "Use $endnote-for-word to insert, restyle, or repair genuine EndNote Cite While You Write citations and the bibliography in this Word file, taking every rec-number from the EndNote library, then validate the result."
+policy:
+  allow_implicit_invocation: true

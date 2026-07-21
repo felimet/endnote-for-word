@@ -1,0 +1,52 @@
+TY  - JOUR
+AU  - Thomsen, Peter T.
+AU  - Shearer, Jane K.
+PY  - 2023
+TI  - Synthetic fixture record one for automated citation tests
+T2  - Journal of Test Fixtures
+VL  - 12
+IS  - 3
+PB  - Fixture Press
+DO  - 10.0000/fixture.0001
+UR  - https://doi.org/10.0000/fixture.0001
+AB  - Synthetic abstract that exists only to exercise the RIS writer in this repository. It describes no real study.
+SP  - 45
+EP  - 46
+KW  - fixture
+KW  - automation
+ER  - 
+
+TY  - JOUR
+AU  - Magrin, Luca
+PY  - 2023
+TI  - Synthetic fixture record two for merged citation tests
+T2  - Journal of Test Fixtures
+VL  - 11
+IS  - 1
+PB  - Fixture Press
+DO  - 10.0000/fixture.0002
+UR  - https://doi.org/10.0000/fixture.0002
+AB  - Synthetic abstract used by the merged citation fixture. It describes no real study.
+SP  - 1
+EP  - 14
+KW  - fixture
+KW  - merged citation
+ER  - 
+
+TY  - JOUR
+AU  - Bernhard, Anna
+AU  - Müller, Karin
+PY  - 2020
+TI  - Synthetic fixture record three for style switching tests
+T2  - Journal of Test Fixtures
+VL  - 8
+IS  - 4
+PB  - Fixture Press
+DO  - 10.0000/fixture.0003
+UR  - https://doi.org/10.0000/fixture.0003
+AB  - Synthetic abstract used by the style switching fixture. It describes no real study.
+SP  - 201
+EP  - 218
+KW  - fixture
+KW  - output style
+ER  - 
