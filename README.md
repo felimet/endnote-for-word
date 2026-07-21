@@ -217,10 +217,10 @@ The bridge preserves source files, writes through a temporary sibling DOCX, and 
 
 ## Quick test prompt
 
-Place one unique `{{CITE:test}}` marker in a test DOCX, replace the three placeholders below, and give the prompt to your AI Agent:
+This test starts without an EndNote library. Replace only the research topic and RIS output folder; the first stage needs no `.enl` file or DOCX:
 
 ```text
-Use endnote-for-word to insert the reference whose DOI is "<bare DOI>" from the EndNote library "<full .enl path>" at {{CITE:test}} in "<full .docx path>". Preserve the source and write a new output file. Use IEEE by default; use Display As: Author (Year) when the marker is the grammatical author subject, otherwise use Default Format. Keep Word and EndNote silent. Verify the DOI before citing, then validate the native EndNote citation and bibliography fields and confirm that the bibliography displays doi: https://doi.org/<DOI>. Finally, report the output path and validation result.
+Use the available scholarly-search or web tools to find one highly relevant peer-reviewed journal paper about "<research topic>". Do not invent metadata from memory; confirm the title, authors, journal, and year against the publisher page or a trusted scholarly index. The paper must have a DOI. Normalize it to a bare DOI and verify that https://doi.org/<DOI> resolves. I do not have an EndNote library yet, so use endnote-for-word to export the complete metadata as an EndNote-compatible RIS file in "<RIS output folder>", then pause and tell me how to create a library and import the RIS; never guess a rec_number. After I confirm the import and provide the .enl path plus a DOCX containing {{CITE:test}}, find the imported record in the library, insert a native EndNote citation using IEEE, and save a new output file. Use Display As: Author (Year) when the marker is the grammatical author subject; otherwise use Default Format. Keep Word and EndNote silent. Finally, validate the citation and bibliography fields and doi: https://doi.org/<DOI>, then report the result.
 ```
 
 ## Repository layout

@@ -217,10 +217,10 @@ Bridge 會保留來源檔，透過同層暫存 DOCX 完成儲存；除非明確�
 
 ## 快速測試 Prompt
 
-先在測試 DOCX 中放入唯一標記 `{{CITE:test}}`，再將以下 Prompt 中的三個路徑或 DOI 換成實際值後交給 AI Agent：
+此測試從「尚未建立 EndNote library」開始。只要替換研究主題與 RIS 輸出資料夾；第一階段不需要 `.enl` 或 DOCX：
 
 ```text
-請使用 endnote-for-word，將 EndNote library「<完整 .enl 路徑>」中 DOI 為「<裸 DOI>」的文獻插入 Word「<完整 .docx 路徑>」的 {{CITE:test}} 位置。保留來源檔並另存新檔，預設使用 IEEE；若標記是句子的作者主詞，使用 Display As: Author (Year)，否則使用 Default Format。Word 與 EndNote 全程靜默。引用前先驗證 DOI，完成後驗證原生 EndNote citation 與 bibliography fields，並確認 bibliography 顯示 doi: https://doi.org/<DOI>，最後回報輸出路徑與驗證結果。
+請使用可用的學術搜尋或網路工具，為「<研究主題>」找 1 篇最相關的同儕審查期刊論文。不可依記憶虛構資料；請以出版社頁面或可信學術索引核對題名、作者、期刊與年份。論文必須具備 DOI，將 DOI 正規化為裸 DOI，並先驗證 https://doi.org/<DOI> 可以解析。因為我尚未建立 EndNote library，請用 endnote-for-word 將完整書目資料輸出為 EndNote 相容 RIS 至「<RIS 輸出資料夾>」，然後暫停並告訴我如何建立 library 及匯入 RIS；不得猜測 rec_number。等我回覆已匯入並提供 .enl 與含有 {{CITE:test}} 的 DOCX 路徑後，再從 library 搜尋該筆紀錄、以 IEEE 插入原生 EndNote 引用並另存新檔。若標記是句子的作者主詞，使用 Display As: Author (Year)，否則使用 Default Format。Word 與 EndNote 全程靜默，最後驗證 citation、bibliography fields 及 doi: https://doi.org/<DOI>，並回報結果。
 ```
 
 ## Repository 結構
