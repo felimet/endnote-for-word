@@ -42,16 +42,21 @@ dialog and blocks the run.
    when missing, otherwise only its `<Style>` element is replaced.
 9. For each citation, `Find-UniqueMarkerRange` locates the marker and the range text is set
    to the generated temporary citation string.
-10. `Invoke-CwywFormat` calls `ENFormatBibliography` through `Application.Run`.
-11. For each `display: author-year` entry, select its native field by document order and
+10. Refuse to continue if any `{{CITE:...}}` remains. EndNote uses braces as temporary
+    citation delimiters, so even one marker omitted from the manifest can open Select
+    Matching Reference. Subset tests must use a scratch copy with unselected markers removed.
+11. `Invoke-CwywFormat` calls `ENFormatBibliography` through `Application.Run`.
+12. For each `display: author-year` entry, select its native field by document order and
     call `ENAuthorYearFormat`. Under IEEE this produces a form such as `Author et al. [1]`.
-12. Poll until the EN.CITE field count reaches the expected value or the automation timeout
+13. Poll until the EN.CITE field count reaches the expected value or the automation timeout
     expires.
-13. Save atomically: `SaveAs2` to a `.<name>.<guid>.tmp.docx` sibling, stop Word, then move
+14. Save atomically: `SaveAs2` to a `.<name>.<guid>.tmp.docx` sibling, stop Word, then move
     the temporary file onto the output path.
 
 Source documents and libraries are user data. The bridge never writes to `InputPath`
-unless `-Overwrite` is supplied, and never writes to the library at all.
+unless `-Overwrite` is supplied. Library queries and prechecks are read-only; the separate
+`import-ris` action is the sole library-writing action and delegates the write to EndNote
+Direct Export without modifying `sdb.eni` itself.
 
 ## Manifest schema v1
 
@@ -158,6 +163,11 @@ Two independent replications reported comparable agreement {{CITE:merged}}.
 The scoring rubric is reproduced verbatim from the original protocol {{CITE:rubric_pages}}.
 ```
 
+When the source already contains a narrative author and typed number, replace that whole
+span rather than appending a marker. For example, transform
+`Li et al. [1] 以聚丙烯...` into `{{CITE:li2024}} 以聚丙烯...` and set
+`display: "author-year"`. EndNote then owns both the author text and the number.
+
 Manifest, covering a single citation, a merged citation and a cited pages citation:
 
 ```json
@@ -223,6 +233,11 @@ EndNote's own `ENAuthorYearFormat` to `display: author-year`, which places the a
 before that number, for example `Thomsen et al. [1]`. The exact author-list shortening is
 owned by the output style. Never type the author name into the field result.
 
+Punctuation is style-owned too. A result such as `Hernandez, et al. [1]` is valid IEEE
+output even if the replaced draft text omitted the comma. Do not treat that difference as a
+warning, request confirmation, or fall back to `display: default`; validation intentionally
+checks the surname and native field, not comma placement.
+
 ## Bridge command lines for every action
 
 The bridge is `scripts\endnote-word.ps1` at the repository root. It runs on both
@@ -250,6 +265,12 @@ pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File script
 # Install the packaged defaults into %APPDATA%\EndNoteForWordAgent\defaults.json.
 pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action configure-defaults
 
+# Import RIS into an existing exact target library through EndNote Direct Export.
+pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action import-ris -LibraryPath $libraryEnl -RisPath $risFile
+
+# With EndNote fully closed, create a new target by cloning a zero-record library pair, then import the RIS.
+pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action import-ris -LibraryPath $newLibraryEnl -RisPath $risFile -EmptyLibraryTemplatePath $emptyLibraryEnl
+
 # Render. Library and style come from the manifest.
 pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action render -InputPath $inputDocx -OutputPath $outputDocx -ManifestPath $manifestJson
 
@@ -275,9 +296,9 @@ pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File script
 pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action unformat -InputPath $inputDocx -OutputPath $outputDocx
 ```
 
-There are eight actions and no more:
+There are nine actions and no more:
 `probe`, `list-styles`, `configure-defaults`, `render`, `validate`, `update`, `set-style`,
-`unformat`.
+`unformat`, `import-ris`.
 
 There is deliberately **no `remove-field-codes` action**. Stripping field codes to plain
 text would need the `ENRemoveFieldCodes` macro, and that macro was measured to raise a
@@ -295,6 +316,9 @@ Action notes that the command lines alone do not convey:
 - `set-style` reports both `previous_style` and `style`.
 - `configure-defaults` never touches EndNote's own registry preferences. EndNote's UI state
   belongs to the user.
+- `import-ris` is the sole library-writing action. It verifies the exact active library,
+  delegates the write to EndNote Direct Export, reports the live-record count delta, and
+  never writes `sdb.eni` itself.
 - Exactly one line of compact JSON appears on stdout and it is the last stdout line. All
   logging goes to stderr.
 
@@ -305,7 +329,7 @@ Action notes that the command lines alone do not convey:
 | 0 | Success. |
 | 1 | Unhandled error. |
 | 2 | `probe` ran but the environment is not ready. |
-| 3 | `validate` ran and at least one gate failed. |
+| 3 | `validate` failed at least one gate, or `import-ris` observed no increase in live references. |
 
 | Variable | Default | Effect |
 |---|---|---|
@@ -313,7 +337,7 @@ Action notes that the command lines alone do not convey:
 | `ENDNOTE_AUTOMATION_TIMEOUT_MS` | 60000 | How long the render step polls for the expected EN.CITE field count. |
 | `ENDNOTE_WORD_POWERSHELL` | unset | Overrides which PowerShell executable the MCP server spawns. |
 | `ENDNOTE_WORD_PYTHON` | first Python 3 on PATH | Python used for the mandatory DOI and library precheck. |
-| `ENDNOTE_WORD_TIMEOUT_SECONDS` | 240 | MCP server subprocess timeout before the watchdog kills orphaned processes. |
+| `ENDNOTE_WORD_TIMEOUT_SECONDS` | unset | Explicit MCP watchdog timeout. When unset, the base is 240 seconds and render scales to `max(240, 60 + 8 * citation_count)`, capped at 1800 seconds. |
 | `ENDNOTE_LIVE_TEST` | unset | Set to `1` to enable the live integration test. |
 | `ENDNOTE_TEST_LIBRARY` | unset | Library path used by the live integration test. |
 

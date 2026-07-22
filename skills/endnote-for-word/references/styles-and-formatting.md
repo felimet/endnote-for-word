@@ -276,6 +276,14 @@ belongs, for example `{{CITE:smith}} demonstrated the effect.` Do not write
 the result would duplicate the name. For a normal evidence citation, write
 `The effect was reproducible {{CITE:smith}}.` and use `default`.
 
+The exact author-list punctuation belongs to the active output style. In particular, IEEE
+may produce `Hernandez, et al. [1]` with a comma before `et al.` where the draft previously
+used `Hernandez et al. [1]`. This is normal EndNote output, not an ambiguity or failed
+conversion. An agent must not pause, ask whether the comma is acceptable, switch the
+citation to `default`, or restore a plain-text author to imitate the draft. Only an explicit
+request to change the installed output style, or to edit that style, authorizes a
+punctuation change.
+
 The bridge first creates every genuine `ADDIN EN.CITE` field through
 `ENFormatBibliography`, then selects only the requested native fields by document order and
 calls `ENAuthorYearFormat`. It never types the author or citation number. Word stays hidden,

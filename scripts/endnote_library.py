@@ -853,6 +853,52 @@ def search_references(
     }
 
 
+def count_references(
+    library: str | os.PathLike[str], *, include_trash: bool = False
+) -> dict[str, Any]:
+    """Count references without applying the search result cap."""
+    action = "count"
+    source: Path | None = None
+    try:
+        library_path, source, library_format = _resolve_library(library)
+        if library_format == LIBRARY_FORMAT_XML:
+            count = sum(
+                1
+                for raw in _read_xml(source)
+                if include_trash or raw["trash_state"] == LIVE_TRASH_STATE
+            )
+        else:
+            with _sqlite_reader(source) as connection:
+                if include_trash:
+                    cursor = connection.execute(f"SELECT COUNT(*) FROM {REFERENCE_TABLE}")
+                else:
+                    cursor = connection.execute(
+                        f"SELECT COUNT(*) FROM {REFERENCE_TABLE} WHERE trash_state = ?",
+                        (LIVE_TRASH_STATE,),
+                    )
+                try:
+                    count = int(cursor.fetchone()[0])
+                finally:
+                    cursor.close()
+    except (FileNotFoundError, ValueError) as exc:
+        return _failure(action, str(exc))
+    except sqlite3.Error as exc:
+        return _failure(action, _sqlite_error_message(source, exc))
+    except ElementTree.ParseError as exc:
+        return _failure(action, f"Could not parse the EndNote XML export: {exc}")
+    except OSError as exc:
+        return _failure(action, f"Could not read the library: {exc}")
+
+    return {
+        "ok": True,
+        "action": action,
+        "library": str(library_path),
+        "library_format": library_format,
+        "count_scope": "all" if include_trash else "live",
+        "count": count,
+    }
+
+
 def get_reference(library: str | os.PathLike[str], rec_number: int) -> dict[str, Any]:
     """Fetch one reference by its EndNote record number."""
     action = "get"
@@ -1446,6 +1492,14 @@ def _build_parser() -> argparse.ArgumentParser:
     get.add_argument("--library", required=True, help="Path to the .enl library or an EndNote XML export.")
     get.add_argument("--rec-number", type=int, required=True, help="EndNote record number.")
 
+    count = subparsers.add_parser("count", help="Count live references in a library.")
+    count.add_argument("--library", required=True, help="Path to the .enl library or an EndNote XML export.")
+    count.add_argument(
+        "--include-trash",
+        action="store_true",
+        help="Count every stored reference, including records in the trash.",
+    )
+
     precheck = subparsers.add_parser(
         "precheck", help="Verify every manifest target against the library before rendering."
     )
@@ -1475,6 +1529,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         )
     if args.command == "get":
         return get_reference(library=args.library, rec_number=args.rec_number)
+    if args.command == "count":
+        return count_references(library=args.library, include_trash=args.include_trash)
     if args.command == "precheck":
         return precheck_manifest(library=args.library, manifest=args.manifest)
     if args.command == "export-ris":

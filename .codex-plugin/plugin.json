@@ -1,7 +1,7 @@
 {
   "name": "endnote-for-word",
-  "version": "1.1.0",
-  "description": "Find DOI-verified research papers and create native IEEE EndNote CWYW citations and bibliographies in Microsoft Word.",
+  "version": "1.2.0",
+  "description": "Find DOI-verified research papers, import RIS, and create native IEEE EndNote CWYW citations and bibliographies in Microsoft Word.",
   "author": {
     "name": "Jia-Ming Zhou (Felimet)"
   },
@@ -29,7 +29,7 @@
   "interface": {
     "displayName": "EndNote for Word",
     "shortDescription": "Find papers and create native EndNote citations in Word.",
-    "longDescription": "Finds DOI-verified research papers, exports RIS for new EndNote libraries, and drives desktop EndNote Cite While You Write through Word COM to produce genuine IEEE ADDIN EN.CITE fields and ADDIN EN.REFLIST bibliographies, with read-only library search and structural validation.",
+    "longDescription": "Finds DOI-verified research papers, exports and imports RIS into exact EndNote libraries, and drives desktop EndNote Cite While You Write through Word COM to produce genuine IEEE ADDIN EN.CITE fields and ADDIN EN.REFLIST bibliographies, with read-only library search and structural validation.",
     "developerName": "Jia-Ming Zhou (Felimet)",
     "category": "Productivity",
     "capabilities": [

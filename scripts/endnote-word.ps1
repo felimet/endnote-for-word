@@ -9,7 +9,8 @@ param(
         'validate',
         'update',
         'set-style',
-        'unformat'
+        'unformat',
+        'import-ris'
     )]
     [string]$Action,
 
@@ -17,6 +18,8 @@ param(
     [string]$OutputPath,
     [string]$ManifestPath,
     [string]$LibraryPath,
+    [string]$RisPath,
+    [string]$EmptyLibraryTemplatePath,
     [string]$Style,
     [switch]$Overwrite
 )
@@ -30,9 +33,10 @@ param(
 # Contract:
 #   - Exactly one compact JSON line on stdout, as the last stdout line.
 #   - All logging goes to stderr through Write-Log.
-#   - Exit codes: 0 ok, 1 unhandled error, 2 probe not ready, 3 validation failed.
+#   - Exit codes: 0 ok, 1 unhandled error, 2 probe not ready, 3 postcondition failed.
 #   - Source documents and libraries are user data. The input document is never opened for
-#     writing and the EndNote library is never written to at all.
+#     writing. The import-ris action is the sole library-writing action and delegates every
+#     write to EndNote's own Direct Export path; this script never edits sdb.eni directly.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -115,6 +119,7 @@ $script:EndNoteDirectoryFilter = 'EndNote*'
 $script:EndNoteStylesFolderName = 'Styles'
 $script:EndNoteStyleExtension = '.ens'
 $script:EndNoteStyleFilter = '*.ens'
+$script:RisExtension = '.ris'
 $script:PersonalStylesRelativePath = 'EndNote\Styles'
 $script:LibraryDataDirectorySuffix = '.Data'
 $script:EndNoteRegistryRoots = @(
@@ -122,6 +127,8 @@ $script:EndNoteRegistryRoots = @(
     'HKLM:\SOFTWARE\ISI ResearchSoft\EndNote',
     'HKCU:\Software\ISI ResearchSoft\EndNote'
 )
+$script:EndNoteRecentLibrariesRegistryPath = 'HKCU:\Software\ISI ResearchSoft\EndNote\Recent Libraries'
+$script:EndNoteMostRecentLibraryValueName = 'File1'
 $script:EndNoteAppPathsKeys = @(
     'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\EndNote.exe',
     'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\EndNote.exe'
@@ -401,6 +408,39 @@ function Invoke-ManifestPrecheck {
     if (-not [string]::IsNullOrWhiteSpace($errorText)) { $details.Add($errorText) }
     if ($details.Count -eq 0) { $details.Add("precheck exited $($captured.exit_code)") }
     throw ('DOI and library precheck failed: ' + ($details -join ' | '))
+}
+
+function Get-EndNoteRecordCount {
+    param(
+        [Parameter(Mandatory)][string]$LibraryFile,
+        [switch]$IncludeTrash
+    )
+    if (-not (Test-Path -LiteralPath $script:LibraryScriptPath -PathType Leaf)) {
+        throw "The read-only library counter is missing: $script:LibraryScriptPath"
+    }
+    $python = Resolve-PythonExecutable
+    $arguments = @(
+        (ConvertTo-ProcessArgument -Value $script:LibraryScriptPath),
+        'count',
+        '--library',
+        (ConvertTo-ProcessArgument -Value $LibraryFile)
+    )
+    if ($IncludeTrash) { $arguments += '--include-trash' }
+    $argumentText = $arguments -join ' '
+    $captured = Invoke-HiddenProcess -Executable $python -Arguments $argumentText
+    if (-not [string]::IsNullOrWhiteSpace($captured.stderr)) {
+        Write-Log -Level INFO -Message $captured.stderr.Trim()
+    }
+    $lines = @($captured.stdout -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($lines.Count -eq 0) { throw "The library counter returned no JSON (exit $($captured.exit_code))." }
+    try { $result = $lines[$lines.Count - 1] | ConvertFrom-Json }
+    catch { throw "The library counter returned invalid JSON: $($_.Exception.Message)" }
+    if ($captured.exit_code -ne 0 -or -not [bool](Get-OptionalProperty -Object $result -Name 'ok')) {
+        $errorText = [string](Get-OptionalProperty -Object $result -Name 'error')
+        if ([string]::IsNullOrWhiteSpace($errorText)) { $errorText = "counter exited $($captured.exit_code)" }
+        throw "Could not count EndNote references: $errorText"
+    }
+    return [int](Get-OptionalProperty -Object $result -Name 'count')
 }
 
 function ConvertTo-ComparableVersion {
@@ -835,6 +875,7 @@ function Invoke-CwywMacro {
 }
 
 function Invoke-CwywFormat {
+    Assert-NoUnresolvedCitationMarkers
     Invoke-CwywMacro -Name $script:CwywFormatMacro
 }
 
@@ -903,6 +944,127 @@ function Start-EndNoteWithLibrary {
     $startedId = 'unknown'
     if ($null -ne $started) { $startedId = [string]$started.Id }
     throw "EndNote (PID $startedId) did not open a main window within $($script:EndNoteReadyTimeoutMilliseconds) ms. Raise ENDNOTE_READY_TIMEOUT_MS or open the library manually first."
+}
+
+function Get-EndNoteMostRecentLibraryPath {
+    try {
+        $recent = Get-ItemProperty -LiteralPath $script:EndNoteRecentLibrariesRegistryPath -ErrorAction Stop
+        $value = [string](Get-OptionalProperty -Object $recent -Name $script:EndNoteMostRecentLibraryValueName)
+        if ([string]::IsNullOrWhiteSpace($value)) { return $null }
+        return [IO.Path]::GetFullPath($value)
+    }
+    catch {
+        return $null
+    }
+}
+
+function Resolve-EndNoteImportLibrary {
+    param(
+        [Parameter(Mandatory)][string]$TargetPath,
+        [AllowNull()][string]$EmptyTemplatePath
+    )
+    $fullTarget = [IO.Path]::GetFullPath($TargetPath)
+    if ([IO.Path]::GetExtension($fullTarget) -ine '.enl') {
+        throw "LibraryPath must use the .enl extension: $fullTarget"
+    }
+    if (Test-Path -LiteralPath $fullTarget -PathType Leaf) {
+        $library = Assert-EndNoteLibrary -Path $fullTarget
+        return [ordered]@{ library = $library; created = $false; template_path = $null }
+    }
+
+    $targetData = Get-LibraryDataDirectory -LibraryFile $fullTarget
+    if (Test-Path -LiteralPath $targetData) {
+        throw "Cannot create the library because its sibling data path already exists: $targetData"
+    }
+    if ([string]::IsNullOrWhiteSpace($EmptyTemplatePath)) {
+        throw 'LibraryPath does not exist. Supply EmptyLibraryTemplatePath pointing to a closed, empty EndNote library to create a new library before import.'
+    }
+
+    $template = Assert-EndNoteLibrary -Path $EmptyTemplatePath
+    $runningEndNote = @(Get-Process -Name $script:EndNoteProcessName -ErrorAction SilentlyContinue)
+    if ($runningEndNote.Count -gt 0) {
+        throw 'Creating a new library from EmptyLibraryTemplatePath requires EndNote to be fully closed, so no background library or SQLite/WAL file can change during the pair copy. Close EndNote and retry.'
+    }
+    $templateCount = Get-EndNoteRecordCount -LibraryFile $template.path -IncludeTrash
+    if ($templateCount -ne 0) {
+        throw "EmptyLibraryTemplatePath must contain zero stored references, including trash; found $templateCount in $($template.path)."
+    }
+    $parent = Split-Path -Parent $fullTarget
+    if ([string]::IsNullOrWhiteSpace($parent)) {
+        throw "LibraryPath must be an absolute path with a parent directory: $fullTarget"
+    }
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    Write-Log -Level INFO -Message "Creating a new EndNote library from the verified empty template: $($template.path)"
+    try {
+        Copy-Item -LiteralPath $template.path -Destination $fullTarget -ErrorAction Stop
+        Copy-Item -LiteralPath $template.data_directory -Destination $targetData -Recurse -ErrorAction Stop
+    }
+    catch {
+        $copyError = $_.Exception.Message
+        try {
+            if (Test-Path -LiteralPath $targetData) {
+                Remove-Item -LiteralPath $targetData -Recurse -Force -ErrorAction Stop
+            }
+            if (Test-Path -LiteralPath $fullTarget) {
+                Remove-Item -LiteralPath $fullTarget -Force -ErrorAction Stop
+            }
+        }
+        catch {
+            throw "Could not copy the empty EndNote library template, and cleanup of the newly created partial target also failed: $copyError | $($_.Exception.Message)"
+        }
+        throw "Could not copy the empty EndNote library template. The partial target was removed. Close the template library in EndNote and retry: $copyError"
+    }
+    $created = Assert-EndNoteLibrary -Path $fullTarget
+    if ((Get-EndNoteRecordCount -LibraryFile $created.path) -ne 0) {
+        throw "The newly copied EndNote library is not empty: $($created.path)"
+    }
+    return [ordered]@{ library = $created; created = $true; template_path = $template.path }
+}
+
+function Open-EndNoteLibraryForImport {
+    param(
+        [Parameter(Mandatory)][string]$LibraryFile,
+        [Parameter(Mandatory)]$Installation
+    )
+    $fileName = [IO.Path]::GetFileName($LibraryFile)
+    $fullLibrary = [IO.Path]::GetFullPath($LibraryFile)
+    $preexisting = $false
+    $recentBefore = Get-EndNoteMostRecentLibraryPath
+    if (-not [string]::IsNullOrWhiteSpace($recentBefore) -and
+        [string]::Equals($recentBefore, $fullLibrary, [StringComparison]::OrdinalIgnoreCase)) {
+        foreach ($process in @(Get-Process -Name $script:EndNoteProcessName -ErrorAction SilentlyContinue)) {
+            if ($process.MainWindowHandle -ne 0 -and $process.MainWindowTitle -like "* - $fileName") {
+                $preexisting = $true
+                break
+            }
+        }
+    }
+
+    # Unlike render, import is an explicit request to mutate this exact library. Opening the
+    # supplied path is therefore required even when another library is already open.
+    Write-Log -Level INFO -Message "Opening the import target library: $LibraryFile"
+    Start-Process -FilePath $Installation.executable -ArgumentList ('"' + $LibraryFile + '"') -WindowStyle Hidden | Out-Null
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($script:EndNoteReadyTimeoutMilliseconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $recentLibrary = Get-EndNoteMostRecentLibraryPath
+        foreach ($process in @(Get-Process -Name $script:EndNoteProcessName -ErrorAction SilentlyContinue)) {
+            if ($process.MainWindowHandle -ne 0 -and $process.MainWindowTitle -like "* - $fileName" -and
+                -not [string]::IsNullOrWhiteSpace($recentLibrary) -and
+                [string]::Equals($recentLibrary, $fullLibrary, [StringComparison]::OrdinalIgnoreCase)) {
+                return [ordered]@{
+                    preexisting = $preexisting
+                    process_id = $process.Id
+                    title = $process.MainWindowTitle
+                    confirmed_library_path = $recentLibrary
+                }
+            }
+        }
+        Start-Sleep -Milliseconds $script:AutomationPollMilliseconds
+    }
+    throw "EndNote did not confirm the exact requested import target '$fullLibrary' within $($script:EndNoteReadyTimeoutMilliseconds) ms."
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -1254,6 +1416,15 @@ function Set-CitationMarkers {
         $range = $script:Document.Range([int]$plan.start, [int]$plan.end)
         try { $range.Text = [string]$plan.text }
         finally { Release-ComObject $range }
+    }
+}
+
+function Assert-NoUnresolvedCitationMarkers {
+    $content = $script:Document.Content
+    try { $text = [string]$content.Text }
+    finally { Release-ComObject $content }
+    if ($text.IndexOf($script:CitationMarkerPrefix, [StringComparison]::Ordinal) -ge 0) {
+        throw "Unresolved citation marker text remains after manifest replacement ($($script:CitationMarkerPrefix)...). Refusing to call CWYW because EndNote treats braces as temporary citations and may open Select Matching Reference. Add every document marker to the manifest, or remove unselected markers from a scratch copy before a subset test."
     }
 }
 
@@ -2081,6 +2252,71 @@ function Invoke-Unformat {
         })
 }
 
+function Invoke-ImportRis {
+    if ([string]::IsNullOrWhiteSpace($LibraryPath)) { throw 'import-ris requires LibraryPath.' }
+    if ([string]::IsNullOrWhiteSpace($RisPath)) { throw 'import-ris requires RisPath.' }
+    $resolvedRis = Resolve-ExistingFile -Path $RisPath -Label 'RisPath'
+    if ([IO.Path]::GetExtension($resolvedRis) -ine $script:RisExtension) {
+        throw "RisPath must use the $($script:RisExtension) extension: $resolvedRis"
+    }
+    $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+    $risText = [IO.File]::ReadAllText($resolvedRis, $strictUtf8)
+    $risRecordCount = [regex]::Matches($risText, '(?m)^TY  - ').Count
+    if ($risRecordCount -lt 1) {
+        throw 'RisPath contains no RIS records (no line beginning with TY  - ).'
+    }
+
+    $resolved = Resolve-EndNoteImportLibrary -TargetPath $LibraryPath -EmptyTemplatePath $EmptyLibraryTemplatePath
+    $library = $resolved.library
+    $beforeCount = Get-EndNoteRecordCount -LibraryFile $library.path
+    $installation = Get-EndNoteInstallation
+    if ($null -eq $installation) {
+        throw 'EndNote is not installed or could not be discovered, so RIS cannot be imported through EndNote Direct Export.'
+    }
+    $opened = Open-EndNoteLibraryForImport -LibraryFile $library.path -Installation $installation
+
+    Write-Log -Level INFO -Message "Sending RIS to EndNote Direct Export: $resolvedRis"
+    Start-Process -FilePath $installation.executable -ArgumentList ('"' + $resolvedRis + '"') -WindowStyle Hidden | Out-Null
+
+    $afterCount = $beforeCount
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($script:EndNoteReadyTimeoutMilliseconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds $script:AutomationPollMilliseconds
+        try { $afterCount = Get-EndNoteRecordCount -LibraryFile $library.path }
+        catch {
+            # EndNote briefly locks or rotates the SQLite files while committing. Retry until
+            # the deadline rather than treating that expected transient as import failure.
+            continue
+        }
+        if ($afterCount -gt $beforeCount) { break }
+    }
+
+    $importedCount = $afterCount - $beforeCount
+    $note = $null
+    if ($importedCount -eq 0) {
+        $note = 'The live-reference count did not increase after EndNote Direct Export. Search the exact library by DOI: all records may already exist, or EndNote may have rejected or discarded the import.'
+        Write-Log -Level WARN -Message $note
+    }
+    Write-JsonResult ([ordered]@{
+            ok                          = ($importedCount -gt 0)
+            action                      = 'import-ris'
+            library_path                = $library.path
+            library_created             = [bool]$resolved.created
+            empty_library_template_path = $resolved.template_path
+            ris_path                    = $resolvedRis
+            ris_record_count             = $risRecordCount
+            live_references_before       = $beforeCount
+            live_references_after        = $afterCount
+            imported_count               = $importedCount
+            endnote_preexisting_target   = [bool]$opened.preexisting
+            endnote_window_title         = $opened.title
+            confirmed_library_path       = $opened.confirmed_library_path
+            import_route                 = 'EndNote Direct Export'
+            note                         = $note
+        })
+    if ($importedCount -eq 0) { exit 3 }
+}
+
 # ---------------------------------------------------------------------------------------------
 # Entry point.
 # ---------------------------------------------------------------------------------------------
@@ -2095,6 +2331,7 @@ try {
         'update' { Invoke-Update }
         'set-style' { Invoke-SetStyle }
         'unformat' { Invoke-Unformat }
+        'import-ris' { Invoke-ImportRis }
     }
 }
 catch {

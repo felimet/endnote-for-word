@@ -112,7 +112,8 @@ makes CMD render the UTF-8 the bridge emits.
 The bridge writes exactly one line of compact JSON to stdout as its last stdout line, and
 sends all logging to stderr. Capture stdout when you want the result, and read stderr when
 you want to know what happened. Exit codes are `0` for success, `1` for an unhandled error,
-`2` for a probe that reports not ready, and `3` for a validation failure.
+`2` for a probe that reports not ready, and `3` when validation fails or an RIS import
+produces no observable increase in live references.
 
 ## WSL
 
@@ -250,7 +251,7 @@ repository or a Codex skill directory on its own.
 |---|---|---|
 | `ENDNOTE_WORD_POWERSHELL` | unset | Absolute path to the PowerShell executable the MCP server should launch. Overrides the `pwsh.exe` then `powershell.exe` search. `run-mcp.ps1` resolves it once at launch and publishes it to the server. |
 | `ENDNOTE_WORD_PYTHON` | unset | Absolute path to the Python interpreter `run-mcp.ps1` uses to host the MCP server. Overrides the `python.exe`, `python3.exe`, `python`, `python3` search on `PATH`. |
-| `ENDNOTE_WORD_TIMEOUT_SECONDS` | `240` | MCP watchdog timeout for one bridge call. On expiry the server terminates the Word process the call created. |
+| `ENDNOTE_WORD_TIMEOUT_SECONDS` | unset | Explicit MCP watchdog timeout. Without it, calls use 240 seconds; render grows to `max(240, 60 + 8 * citation_count)`, capped at 1800 seconds. On expiry the server terminates only processes the call created. |
 | `ENDNOTE_AUTOMATION_TIMEOUT_MS` | `60000` | Bridge side limit for polling until the expected citation field count is reached after `ENFormatBibliography`. |
 | `ENDNOTE_READY_TIMEOUT_MS` | `90000` | Bridge side limit for waiting until a started EndNote process reports a main window. |
 | `ENDNOTE_LIBRARY_LOG_LEVEL` | `INFO` | Logging level of `endnote_library.py`. Set to `DEBUG` to see the SQLite statements it issues. Logs go to stderr only, never to stdout. |
@@ -263,7 +264,7 @@ variable as its documented override.
 
 ## Verification after installation
 
-1. List the skill and the MCP tool set in the host, and confirm all twelve tools appear.
+1. List the skill and the MCP tool set in the host, and confirm all thirteen tools appear.
 2. Call `probe_endnote_word` with no arguments. Require `ok: true`. Check in particular
    `cwyw_template_loaded` and `cwyw_macro_callable`, which are the two fields that prove the
    CWYW integration actually responds rather than merely being installed.

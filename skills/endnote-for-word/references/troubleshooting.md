@@ -60,7 +60,9 @@ no macro in the CWYW inventory that disables them.
 **What does help.** The watchdog in the MCP layer:
 
 1. Before the bridge call, enumerate all `WINWORD.EXE` process ids.
-2. Run the bridge with a timeout of `ENDNOTE_WORD_TIMEOUT_SECONDS`, default 240.
+2. Run the bridge with the explicit `ENDNOTE_WORD_TIMEOUT_SECONDS` when set. Otherwise use
+   240 seconds, with render automatically scaled to `max(240, 60 + 8 * citation_count)` and
+   capped at 1800 seconds.
 3. On timeout, enumerate `WINWORD.EXE` again and compute the difference. Terminate only the
    process ids that appeared during this call.
 4. Do the same for `EndNote.exe`, and never terminate an EndNote process that already
@@ -229,9 +231,8 @@ the terminal itself:
 | Git Bash | Usually already UTF-8. If not, set `LANG=en_US.UTF-8`. |
 
 Do not fix mangled output by transliterating data. If a file was written with the wrong
-encoding, regenerate it. The RIS exporter writes UTF-8 with CRLF line endings, and an import
-that mangles author names means the EndNote import dialog's text translation was not set to
-Unicode UTF-8, not that the file is wrong. See `library-import.md`.
+encoding, regenerate it. The RIS exporter writes UTF-8 with CRLF line endings, and the
+automated importer rejects invalid UTF-8 before EndNote opens. See `library-import.md`.
 
 ## Orphaned WINWORD processes
 

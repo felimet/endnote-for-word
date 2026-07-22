@@ -352,6 +352,19 @@ class EndNoteLibraryCliTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(len(result["references"]), 2)
 
+    def test_count_reports_all_live_records_without_the_search_cap(self) -> None:
+        result = self.run_cli("count", "--library", str(self.library))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["count"], 4)
+        self.assertEqual(result["library_format"], "sqlite")
+        self.assertEqual(result["count_scope"], "live")
+
+    def test_count_can_include_trashed_records_for_empty_template_validation(self) -> None:
+        result = self.run_cli("count", "--library", str(self.library), "--include-trash")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["count"], 5)
+        self.assertEqual(result["count_scope"], "all")
+
     def test_search_accepts_an_endnote_xml_export(self) -> None:
         export = self.workspace / "export.xml"
         export.write_text(XML_EXPORT, encoding="utf-8")

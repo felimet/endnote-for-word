@@ -8,6 +8,7 @@ EndNote process is ever started.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -24,7 +25,7 @@ BRIDGE = ROOT / "scripts" / "endnote-word.ps1"
 POWERSHELL_ENV_VARIABLE = "ENDNOTE_WORD_POWERSHELL"
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "endnote-for-word"
-SERVER_VERSION = "1.1.0"
+SERVER_VERSION = "1.2.0"
 PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5
 
 STUB_RESULT = {"ok": True, "action": "stub", "checks": {"stub_bridge": True}}
@@ -42,6 +43,7 @@ EXPECTED_TOOLS = {
     "set_endnote_citation_style",
     "unformat_endnote_word_document",
     "export_reference_import_file",
+    "import_reference_file",
 }
 
 DESTRUCTIVE_TOOLS = {
@@ -49,6 +51,7 @@ DESTRUCTIVE_TOOLS = {
     "update_endnote_word_fields",
     "set_endnote_citation_style",
     "unformat_endnote_word_document",
+    "import_reference_file",
 }
 
 # Build spec section 0.6b: ENRemoveFieldCodes raises a modal confirmation dialog and hangs
@@ -65,6 +68,16 @@ READ_ONLY_TOOLS = {
 }
 
 REQUIRED_ANNOTATIONS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+
+
+def load_server_module():
+    """Load the server module without starting its stdio loop."""
+    spec = importlib.util.spec_from_file_location("endnote_for_word_mcp_server", SERVER)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load {SERVER}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def write_stub_powershell(directory: Path) -> Path:
@@ -195,6 +208,63 @@ class McpProtocolTests(unittest.TestCase):
             "references"
         ]["items"]
         self.assertIn("doi", item_schema["required"])
+
+    def test_ris_import_targets_an_explicit_library_and_file(self) -> None:
+        tools = {tool["name"]: tool for tool in self.list_tools()}
+        schema = tools["import_reference_file"]["inputSchema"]
+        self.assertEqual(schema["required"], ["library_path", "ris_path"])
+        self.assertIn("empty_library_template_path", schema["properties"])
+        annotations = tools["import_reference_file"]["annotations"]
+        self.assertTrue(annotations["destructiveHint"])
+        self.assertFalse(annotations["idempotentHint"])
+
+    def test_ris_import_arguments_reach_the_powershell_bridge(self) -> None:
+        server = load_server_module()
+        command = server._build_command(
+            "import-ris",
+            {
+                "library_path": r"C:\Research\Target.enl",
+                "ris_path": r"C:\Research\references.ris",
+                "empty_library_template_path": r"C:\Research\Empty.enl",
+            },
+            "pwsh.exe",
+        )
+        self.assertEqual(command[0], "pwsh.exe")
+        self.assertEqual(command[command.index("-LibraryPath") + 1], r"C:\Research\Target.enl")
+        self.assertEqual(command[command.index("-RisPath") + 1], r"C:\Research\references.ris")
+        self.assertEqual(
+            command[command.index("-EmptyLibraryTemplatePath") + 1],
+            r"C:\Research\Empty.enl",
+        )
+
+    def test_default_render_timeout_scales_for_large_manifests(self) -> None:
+        server = load_server_module()
+        previous = os.environ.pop("ENDNOTE_WORD_TIMEOUT_SECONDS", None)
+        try:
+            with tempfile.TemporaryDirectory(prefix="endnote-timeout-") as directory:
+                manifest = Path(directory) / "manifest.json"
+                manifest.write_text(
+                    json.dumps({"citations": [{"id": str(index)} for index in range(83)]}),
+                    encoding="utf-8",
+                )
+                timeout = server._timeout_seconds("render", {"manifest_path": str(manifest)})
+        finally:
+            if previous is not None:
+                os.environ["ENDNOTE_WORD_TIMEOUT_SECONDS"] = previous
+        self.assertEqual(timeout, 724)
+
+    def test_explicit_timeout_overrides_manifest_scaling(self) -> None:
+        server = load_server_module()
+        previous = os.environ.get("ENDNOTE_WORD_TIMEOUT_SECONDS")
+        os.environ["ENDNOTE_WORD_TIMEOUT_SECONDS"] = "300"
+        try:
+            timeout = server._timeout_seconds("render", {"manifest_path": "does-not-matter.json"})
+        finally:
+            if previous is None:
+                os.environ.pop("ENDNOTE_WORD_TIMEOUT_SECONDS", None)
+            else:
+                os.environ["ENDNOTE_WORD_TIMEOUT_SECONDS"] = previous
+        self.assertEqual(timeout, 300)
 
     def test_ping_and_unknown_method(self) -> None:
         self.assertEqual(self.request({"jsonrpc": "2.0", "id": 3, "method": "ping"})["result"], {})

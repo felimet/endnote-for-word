@@ -2,21 +2,22 @@
 
 [English](README.md)
 
-EndNote for Word 是 Microsoft Word 的 AI 引用管理工具包，提供 Claude Code、Claude Desktop、Codex、ChatGPT Desktop skill/plugin 與 MCP server，可搜尋並驗證具 DOI 的研究論文、為尚無 EndNote library 的使用者匯出 RIS，並建立真正的 EndNote Cite While You Write (CWYW) IEEE 引用與參考文獻清單。
+EndNote for Word 是 Microsoft Word 的 AI 引用管理工具包，提供 Claude Code、Claude Desktop、Codex、ChatGPT Desktop skill/plugin 與 MCP server，可搜尋並驗證具 DOI 的研究論文、匯出及匯入 RIS 至 EndNote library，並建立真正的 EndNote Cite While You Write (CWYW) IEEE 引用與參考文獻清單。
 
 ## 本工具做什麼
 
-- 引導 AI Agent 使用可用的學術搜尋或網路工具尋找同儕審查論文、核對 metadata 與 DOI，並為尚未建立 library 的使用者匯出 EndNote 相容 RIS。
+- 引導 AI Agent 尋找同儕審查論文、核對 metadata 與 DOI、匯出 EndNote 相容 RIS，再透過 EndNote Direct Export 匯入；目標 library 尚不存在時，先完全關閉 EndNote，再由確認為空的 library 模板建立。
 - 將 DOCX 中的 `{{CITE:id}}` 標記換成真正的 CWYW 引用：每一筆引用都是帶有 EndNote traveling library 的 `ADDIN EN.CITE` 欄位，參考文獻清單則是 `ADDIN EN.REFLIST` 欄位。
 - 不手打引用文字、不在 OOXML 中偽造欄位碼，也不以純文字清單假冒參考文獻清單。
-- 以唯讀方式讀取 `.enl` 書目庫，讓 Agent 在開啟 Word 之前就能搜尋文獻並確認每一個紀錄編號。
+- 以唯讀快照讀取 `.enl` 書目庫，讓 Agent 在開啟 Word 前搜尋文獻並確認紀錄編號；RIS 匯入是唯一會寫入 library 的動作，且寫入完全由 EndNote 執行。
 - 預設採 IEEE，每筆被引用文獻都必須具備 DOI，引用前會透過 doi.org 驗證，並拒絕重複的 resolver 前綴。
 - 同時支援 IEEE Default Format 的 `[x]`，以及 EndNote Display as Author (Year) 所產生的 `Author et al. [x]` 敘述式引用。
+- 保留 output style 決定的敘述式標點；`Hernandez, et al. [1]` 這類形式是正常的 EndNote 輸出，不會只為移除逗號而退回純文字作者或 Default Format。
 - 在渲染前先對 manifest 與已安裝輸出樣式做預先檢查。不存在的紀錄編號或樣式名稱會讓 EndNote 跳出對話框，automation 會卡住直到 process 被強制結束。
 - Word 全程隱藏；由 bridge 啟動的 EndNote 也以隱藏視窗執行。
 - 以程式方式切換文件輸出樣式並重建參考文獻清單，全程不需對話框。
 - 對完成的文件做結構性驗證，回報欄位數量、樣式，以及文件記錄的書目庫資訊。
-- 匯出 RIS 檔，讓尚未收錄的文獻可以一次匯入書目庫。
+- 匯出並匯入 RIS，回報匯入前後的有效文獻數，再重新查詢 EndNote 指派的 `rec_number`。
 
 ## 系統需求
 
@@ -58,7 +59,7 @@ pwsh.exe -NoProfile -ExecutionPolicy Bypass -File scripts/endnote-word.ps1 -Acti
 從 https://github.com/felimet/endnote-for-word 安裝或升級 EndNote for Word toolkit。偵測我目前可用的終端機，並使用 PowerShell 7、Windows PowerShell 5.1、Windows 上的 Bash，包括 Git Bash，或 CMD；有 pwsh.exe 時優先使用，否則退回 powershell.exe。在 WSL Bash 中呼叫 Windows 側執行檔，不使用 Linux pwsh。兩者皆不存在時，停止執行並提示我依 https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows 安裝 PowerShell。確認 Microsoft Word 桌面版，以及安裝了 Cite While You Write 增益集的桌面版 EndNote 均可使用；安裝可攜式 skill、註冊本機 stdio MCP server、執行 probe 與 repository 測試、保留既有 Agent 設定，並列出所有異動檔案。probe 未回報 cwyw_macro_callable 為 true，或 validation 未回傳 ok: true 時，不得宣稱完成。
 ```
 
-若尚無 library，先依[快速測試 Prompt](#快速測試-prompt)請 Agent 搜尋論文並匯出 RIS；若已有 library，直接提供 DOCX 與 `.enl` 路徑。你可以直接告訴 Agent 偏好的 EndNote Output Style，例如 `IEEE` 或 `APA 7th`（APA 7）；未指定時使用 IEEE。Agent 在編輯 Word 前必須確認該樣式已安裝，且不得擅自改用其他樣式。
+若尚無目標 library，依[快速測試 Prompt](#快速測試-prompt)先完全關閉 EndNote，再提供一個可供複製的空白 `.enl` 模板；若已有 library，直接提供 DOCX 與目標 `.enl` 路徑。你可以直接告訴 Agent 偏好的 EndNote Output Style，例如 `IEEE` 或 `APA 7th`（APA 7）；未指定時使用 IEEE。Agent 在編輯 Word 前必須確認該樣式已安裝，且不得擅自改用其他樣式。
 
 各平台 skill 位置與 MCP 設定見[安裝矩陣](skills/endnote-for-word/references/installation-matrix.md)。
 
@@ -200,8 +201,8 @@ Manifest 預先檢查會拒絕已帶 `doi:` 或 `https://doi.org/` 的 EndNote D
 |---|---|
 | 不支援引用前綴 | 反斜線前綴語法（例如 `{see \Thomsen, 2023 #1}`）會開啟 EndNote 對話框並卡住 automation。manifest 直接拒絕 `prefix`。 |
 | 不支援排除作者或年份 | `{\Thomsen, 2023 #1}` 與 `ENExcludeAuthor` 系列巨集皆由對話框驅動，會卡住流程。樣式允許時請改用 `suffix` 文字。 |
-| 書目庫為唯讀 | 本工具不會寫入 `.enl` 檔或其 `.Data` 目錄；它會將內部資料庫複製到暫存檔、讀取複本，再刪除複本。 |
-| 新增文獻為半自動 | 新文獻會匯出成 RIS 檔，由你自行在 EndNote 以 **File > Import** 匯入。本工具不寫入你的書目庫。 |
+| 書目庫資料庫安全 | 搜尋只讀取暫存快照；工具絕不直接修改 `sdb.eni`，明確要求的 RIS 匯入交由 EndNote Direct Export 執行。 |
+| 新增文獻已自動化 | `import_reference_file` 開啟精確的目標 library、把 RIS 交給 EndNote、回報數量差異，再要求依 DOI 重新查詢紀錄編號。新目標只能在 EndNote 完全關閉時，由為 0 筆的 library 複製建立。 |
 | 參考文獻清單位置採 CWYW 預設 | EndNote 會把清單放在 Cite While You Write 預設的位置，通常是文件結尾。需要調整時請在 EndNote 或 Word 中自行搬移，本工具不負責移動位置。 |
 | 不切換 instant formatting | CWYW 的切換巨集無法讀回目前狀態，盲目呼叫會翻轉未知狀態。需要調整時請在 EndNote 功能區操作。 |
 | 轉為純文字須手動操作 | 對應的 CWYW 巨集 `ENRemoveFieldCodes` 會跳出確認對話框，在 automation 下永不回傳，因此本工具沒有 `remove-field-codes` 動作，也沒有對應的 MCP 工具。請自行在 Word 功能區以 **EndNote > Convert Citations and Bibliography > Convert to Plain Text** 執行；該操作會另存新檔，原始檔的欄位碼保持不變。轉換結果不可逆，EndNote 無法再更新該複本中的引用。 |
@@ -218,10 +219,11 @@ Bridge 會保留來源檔，透過同層暫存 DOCX 完成儲存；除非明確�
 
 ## 快速測試 Prompt
 
-此測試從「尚未建立 EndNote library」開始。只要替換研究主題與 RIS 輸出資料夾；第一階段不需要 `.enl` 或 DOCX：
+此測試會在 EndNote 完全關閉時，由空白 EndNote library 建立新目標。請替換研究主題、目標路徑、模板路徑及 DOCX 路徑：
 
 ```text
-請使用可用的學術搜尋或網路工具，為「<研究主題>」找 1 篇最相關的同儕審查期刊論文。不可依記憶虛構資料；請以出版社頁面或可信學術索引核對題名、作者、期刊與年份。論文必須具備 DOI，將 DOI 正規化為裸 DOI，並先驗證 https://doi.org/<DOI> 可以解析。因為我尚未建立 EndNote library，請用 endnote-for-word 將完整書目資料輸出為 EndNote 相容 RIS 至「<RIS 輸出資料夾>」，然後暫停並告訴我如何建立 library 及匯入 RIS；不得猜測 rec_number。等我回覆已匯入並提供 .enl 與含有 {{CITE:test}} 的 DOCX 路徑後，再從 library 搜尋該筆紀錄、以 IEEE 插入原生 EndNote 引用並另存新檔。若標記是句子的作者主詞，使用 Display As: Author (Year)，否則使用 Default Format。Word 與 EndNote 全程靜默，最後驗證 citation、bibliography fields 及 doi: https://doi.org/<DOI>，並回報結果。
+要求 Agent 建立尚不存在的目標 library 前，先完全關閉 EndNote。
+請使用可用的學術搜尋或網路工具，為「<研究主題>」找 1 篇最相關的同儕審查期刊論文。不可依記憶虛構資料；請以出版社頁面或可信學術索引核對題名、作者、期刊與年份。論文必須具備 DOI，將 DOI 正規化為裸 DOI，並先驗證 https://doi.org/<DOI> 可以解析。輸出完整書目資料為 EndNote 相容 RIS，再呼叫 import_reference_file：library_path 為「<新目標 .enl>」、ris_path 為「<RIS 路徑>」、empty_library_template_path 為「<已關閉的空白 .enl>」。依 DOI 重新搜尋新 library，只能使用查詢傳回的 rec_number。在「<DOCX 路徑>」中，若已有 `Li et al. [1]` 這類純文字敘述作者與手打編號，將整段直接換成單一 {{CITE:test}} 標記。以 IEEE 插入原生 EndNote 引用並另存有後綴的新檔；標記是作者主詞時用 Display As: Author (Year)，否則用 Default Format。Word 與 EndNote 全程靜默，最後驗證 citation、bibliography fields 及 doi: https://doi.org/<DOI>，並回報結果。
 ```
 
 ## Repository 結構

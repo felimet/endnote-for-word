@@ -2,54 +2,58 @@
 
 ## Contents
 
-1. The rule: this tool never writes to a library
-2. Why the workflow is semi-automatic
+1. The rule: EndNote owns every library write
+2. Why Direct Export is the supported automation path
 3. The four steps
 4. Step 1: check the reference is not already there
 5. Step 2: generate the RIS file
-6. Step 3: import through the EndNote desktop UI
+6. Step 3: import through EndNote Direct Export
 7. Step 4: re-query for the new rec-number
 8. Failure cases specific to import
 9. What is deliberately not attempted
 
-## The rule: this tool never writes to a library
+## The rule: EndNote owns every library write
 
 The `.enl` library and its `.Data` directory are user data of the highest value in this
 whole pipeline. Losing a Word document costs an afternoon. Corrupting a library that took
 years to build costs the research.
 
-So the rule is absolute and has no override switch, no environment variable, and no
-"advanced" mode:
+The safety rule is about **who performs the write**, not whether import is automated:
 
-- No code path in this project opens a library file for writing.
+- No code path in this project opens `sdb.eni` or another library database file for writing.
 - The SQLite reader copies `<Library>.Data\sdb\sdb.eni` to a temporary file first, opens the
   **copy** with `mode=ro`, and deletes the copy in a `finally` block. The original is never
   the file that gets opened.
-- The bridge never passes a library path to Word for anything except telling EndNote which
-  library to have open.
-- Adding a reference is therefore a human action performed in the EndNote desktop
-  application. This tool prepares the input for that action and verifies the result
-  afterwards.
+- `import_reference_file` opens the exact target `.enl` in EndNote and passes the `.ris`
+  file to EndNote's native Direct Export path. EndNote itself assigns record numbers and
+  updates every related library structure.
+- When a target library does not yet exist, the tool can clone a **library with zero stored
+  references, including trash**, as an empty template. EndNote must be fully closed during
+  this operation. It copies the `.enl` and `.Data` pair together,
+  verifies the new target is still empty, and only then invokes Direct Export.
 
-If an agent is asked to "add this paper to my library", the honest answer is that it can
-produce a ready-to-import file and tell the user exactly which two clicks to perform, then
-confirm the outcome. It cannot perform the insertion itself.
+If an agent is asked to add a paper, it must search first, export RIS when needed, call
+`import_reference_file`, then search again to obtain EndNote-assigned `rec_number` values.
+Never stop merely because the library is empty; an empty library is a valid import target.
 
-## Why the workflow is semi-automatic
+## Why Direct Export is the supported automation path
 
 Three independent reasons, none of them a matter of taste:
 
-**No supported write interface was found.** The measurement pass over this installation
-turned up no programmatic path that EndNote itself supports for adding a record: not in the
-CWYW macro surface, not in the COM add-in, and not in anything the desktop application
-exposes to automation. If a vendor API exists outside what was measured here, this project
-still does not target it, and it does not substitute an undocumented channel for one.
+**The earlier measurement missed EndNote Direct Export.** EndNote's official help states
+that `.RIS` is a Direct Export file type and that EndNote recognizes its import filter and
+imports it into the open library. The local end-to-end spike confirmed the route: open the
+target `.enl`, invoke `EndNote.exe` with the RIS path, then observe the live-reference count
+increase and re-query the assigned record numbers.
 
-**The CWYW macro surface is export-only.** The complete macro inventory extracted from the
+Official EndNote documentation: [Enabling Direct Export](https://docs.endnote.com/docs/endnote/2025/v1/windows/en/content/appendices/enabling_direct_export.htm)
+and [Direct Export providers and formats](https://docs.endnote.com/docs/endnote/2025/v1/windows/en/content/appendices/direct_export_providers.htm).
+
+**The CWYW macro surface is still irrelevant to library import.** The complete macro inventory extracted from the
 CWYW template contains `ENExportWordCitations`, `ENExportWordMasterList` and
 `ENExportTravelingLibrary`. Every one of them moves data out of Word or out of a library.
 There is no import macro, no add-reference macro, and no library-write macro of any kind.
-The absence is structural, not an oversight in the inventory.
+Direct Export belongs to the EndNote desktop executable, not to Word CWYW.
 
 **Direct SQLite writes are unsafe here.** `sdb.eni` is a real SQLite 3 database, but its
 schema declares custom collations `ENCI_Base` and `ENCIN_zh_TW` and a custom SQL function
@@ -64,15 +68,14 @@ waiting for the next library rebuild.
 
 ```text
 1. search_endnote_library        confirm the reference is absent
-2. export_reference_import_file  write a UTF-8 RIS file
-3. EndNote desktop, File > Import   human performs the import
+2. export_reference_import_file  write a UTF-8 RIS file when needed
+3. import_reference_file         EndNote Direct Export performs the import
 4. search_endnote_library        re-query to learn the new rec_number
    precheck_endnote_manifest     confirm the manifest is renderable
 ```
 
-Steps 1, 2 and 4 are tool calls. Step 3 is the human. Do not skip step 4: it is the only
-verification that the import happened at all, because nothing in this toolchain can observe
-the EndNote UI.
+All four steps are tool calls. Do not skip step 4: `imported_count` confirms that the
+library count changed, while the fresh DOI search proves which records EndNote assigned.
 
 ## Step 1: check the reference is not already there
 
@@ -160,25 +163,42 @@ The emitted file is plain text. Open it and read it before handing it to a user.
 exporter is the authority on the exact tags it writes; this table states the intent of each
 field, and a two second look at the file confirms the reality.
 
-## Step 3: import through the EndNote desktop UI
+## Step 3: import through EndNote Direct Export
 
-Hand the user the file path and these instructions. The spike never automated this dialog,
-and this project does not attempt to drive it with synthetic keystrokes, because dialog
-layouts and control labels change between EndNote builds and interface languages. The
-labels below are what the operator confirms on screen, not values this tool sets.
+Call `import_reference_file` with absolute paths:
 
-1. Open the target library in EndNote. It must be the same library the manifest points at.
-2. Choose `File` then `Import` then `File...`.
-3. Select the generated `.ris` file.
-4. Set the import option to the Reference Manager RIS filter.
-5. Choose a duplicate handling option. Prefer the option that discards duplicates, given
-   that step 1 already established the reference should be new.
-6. Set the text translation to Unicode UTF-8, matching the file the exporter wrote. This is
-   the setting that decides whether non-ASCII author names arrive intact or mangled.
-7. Run the import and read the count EndNote reports.
+```json
+{
+  "library_path": "C:\\Research\\Project.enl",
+  "ris_path": "C:\\Research\\endnote-for-word-references.ris"
+}
+```
 
-If EndNote reports zero imported references, do not proceed to step 4 and do not guess a
-`rec_number`. Read the file, fix the RIS, regenerate it and import again.
+The bridge opens that exact library even when EndNote already has another library open,
+confirms the absolute target through EndNote's recent-library registry value rather than a
+possibly ambiguous window title, passes the RIS file to `EndNote.exe`, and polls the
+read-only counter until the live count increases or the timeout expires. It reports
+`live_references_before`,
+`live_references_after`, and `imported_count`.
+
+To create a new target first, also provide `empty_library_template_path`. EndNote must be
+fully closed and the template must contain zero stored references, including trash. The
+tool refuses a non-empty template and refuses to overwrite either an existing target `.enl`
+or an orphaned target `.Data` path:
+
+```json
+{
+  "library_path": "C:\\Research\\NewProject.enl",
+  "ris_path": "C:\\Research\\endnote-for-word-references.ris",
+  "empty_library_template_path": "C:\\Documents\\Empty EndNote Library.enl"
+}
+```
+
+Direct Export recognizes RIS and chooses its filter without driving the File > Import
+dialog, so no `SendKeys`, localized control labels, or modal UI automation is involved.
+If `imported_count` is zero, the tool reports `ok: false`; still search by DOI before retrying,
+because every record may already exist even though no new row was observed. If the DOI is
+absent, EndNote rejected the file or discarded it according to its current settings.
 
 ## Step 4: re-query for the new rec-number
 
@@ -228,8 +248,9 @@ watchdog kills it.
 | Export refuses to run | The references array is empty | Supply at least one reference object. An empty RIS file has no legitimate use here. |
 | Export refuses to run with a DOI error | The DOI is empty or malformed | Supply a valid DOI. A DOI URL is accepted and normalised, but the RIS `DO` tag is always bare. |
 | Export refuses to run and names an index | That reference has neither a `title` nor any `authors`, so nothing identifies it after import | Fill in at least one of the two before exporting. |
-| EndNote imports 0 references | Wrong import filter, or a malformed first tag | Confirm the filter is the Reference Manager RIS filter and that every record starts with `TY`. |
-| Author names arrive mangled | Text translation was not set to Unicode UTF-8 | Delete the imported records, set UTF-8, import again. |
+| `imported_count` is 0 | Records already exist, EndNote discarded duplicates, or Direct Export rejected the file | Search by DOI first. If absent, confirm every record starts with `TY`, regenerate the RIS, and retry once. |
+| New target cannot be created | EndNote is running, the template is non-empty, or its `.Data` pair is missing | Fully close EndNote, use a verified zero-record template, and keep the `.enl` + `.Data` pair together. |
+| RIS is rejected before EndNote opens | The file is not valid UTF-8 or contains no `TY  - ` record | Regenerate it with `export_reference_import_file`, or transcode a trusted external RIS to UTF-8 and retry. |
 | The new record is not found by search | The import went into a different library | Confirm which library was open during the import, and that it is the same path the manifest names. |
 | Two records match the search | The reference already existed and step 1 was skipped | Have the user merge or delete the duplicate in EndNote, then re-query. |
 | `precheck` reports an author mismatch | The manifest carries a full name or a second author instead of the first author surname | Use `first_author_surname` from the search result verbatim. |
@@ -240,13 +261,13 @@ watchdog kills it.
 ## What is deliberately not attempted
 
 - Writing to `sdb.eni` directly, under any circumstance.
-- Driving the EndNote import dialog with synthetic keystrokes or UI automation.
-- Creating a library, repairing a library, or emptying the trash.
+- Driving the EndNote import dialog with synthetic keystrokes or UI automation. Direct Export needs no dialog.
+- Creating a blank library database schema from scratch. New targets are cloned only while EndNote is fully closed, from a verified empty EndNote library so the installed EndNote version owns the schema.
+- Repairing a library or emptying the trash.
 - Editing an existing reference. The same read-only rule applies: correcting a record is a
   human action in EndNote, after which the tool re-queries and continues.
 - Using `ENEditLibraryReferences` from the CWYW macro set. It hands control to the EndNote
   UI and is not a programmatic write path.
 
-Everything in this list is a deliberate boundary, not a gap waiting to be filled in a later
-version. The value of the library being read-only comes from it being read-only without
-exceptions.
+Everything in this list is a deliberate boundary. Import is safe here because EndNote,
+not this project, performs the database write.

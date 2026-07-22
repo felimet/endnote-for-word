@@ -25,7 +25,7 @@ from typing import Any, BinaryIO
 
 
 SERVER_NAME = "endnote-for-word"
-SERVER_VERSION = "1.1.0"
+SERVER_VERSION = "1.2.0"
 SCRIPT_PATH = Path(__file__).with_name("endnote-word.ps1")
 SCRIPT_DIRECTORY = SCRIPT_PATH.parent
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
@@ -43,6 +43,9 @@ POWERSHELL_INSTALL_URL = (
 TIMEOUT_ENV_VARIABLE = "ENDNOTE_WORD_TIMEOUT_SECONDS"
 PYTHON_ENV_VARIABLE = "ENDNOTE_WORD_PYTHON"
 DEFAULT_TIMEOUT_SECONDS = 240
+DEFAULT_RENDER_BASE_TIMEOUT_SECONDS = 60
+DEFAULT_RENDER_SECONDS_PER_CITATION = 8
+MAX_RENDER_TIMEOUT_SECONDS = 1800
 
 # Processes the timeout watchdog is allowed to clean up. Only PIDs that appeared during the
 # call are ever terminated, so a user's own EndNote session is never killed.
@@ -89,6 +92,7 @@ BRIDGE_TOOL_ACTIONS = {
     "update_endnote_word_fields": "update",
     "set_endnote_citation_style": "set-style",
     "unformat_endnote_word_document": "unformat",
+    "import_reference_file": "import-ris",
 }
 # There is deliberately no remove-field-codes action. ENRemoveFieldCodes was measured to raise
 # a modal confirmation dialog that never returns under automation, so converting a document to
@@ -414,10 +418,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "export_reference_import_file",
         "description": (
-            "Write a UTF-8 RIS file from reference objects so the user can import new references "
-            "into their EndNote library themselves. DOI is required and is normalised to one bare "
-            "DO tag even when the input contains one or more resolver prefixes. This plugin never "
-            "writes to a library; import stays a manual, user-controlled step."
+            "Write a UTF-8 RIS file from reference objects. DOI is required and is normalised to "
+            "one bare DO tag even when the input contains one or more resolver prefixes. Use "
+            "import_reference_file next when the records should be imported into a library."
         ),
         "inputSchema": {
             "type": "object",
@@ -443,6 +446,44 @@ TOOLS: list[dict[str, Any]] = [
             "readOnlyHint": False,
             "destructiveHint": False,
             "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "import_reference_file",
+        "description": (
+            "Import a RIS file into the exact EndNote library supplied by library_path through "
+            "EndNote's native Direct Export route, then report the before/after live-reference "
+            "counts. If library_path does not exist, empty_library_template_path may name a "
+            "closed EndNote library with zero stored references, including trash; EndNote must "
+            "be fully closed while its .enl and .Data pair is copied "
+            "to create the target before import. Never guesses rec_numbers and never writes "
+            "sdb.eni directly; search the library again after this call."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "library_path": {
+                    "type": "string",
+                    "description": "Absolute target .enl path. It may be absent only when an empty template is supplied.",
+                },
+                "ris_path": {"type": "string", "description": "Absolute path to a non-empty UTF-8 .ris file."},
+                "empty_library_template_path": {
+                    "type": "string",
+                    "description": (
+                        "Optional absolute path to a closed, empty .enl library to clone when "
+                        "library_path does not yet exist. Ignored when the target exists."
+                    ),
+                },
+            },
+            "required": ["library_path", "ris_path"],
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "title": "Import References into EndNote",
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
             "openWorldHint": False,
         },
     },
@@ -492,19 +533,40 @@ def _powershell_executable() -> str:
     )
 
 
-def _timeout_seconds() -> int:
-    """Read the bridge timeout budget, falling back to the default on a malformed value."""
+def _default_timeout_seconds(action: str, arguments: dict[str, Any]) -> int:
+    """Scale the default render budget for manifests with many citations."""
+    if action != "render":
+        return DEFAULT_TIMEOUT_SECONDS
+    manifest_path = arguments.get("manifest_path")
+    if not isinstance(manifest_path, str) or not manifest_path.strip():
+        return DEFAULT_TIMEOUT_SECONDS
+    try:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        citations = manifest.get("citations") if isinstance(manifest, dict) else None
+        citation_count = len(citations) if isinstance(citations, list) else 0
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return DEFAULT_TIMEOUT_SECONDS
+    estimate = DEFAULT_RENDER_BASE_TIMEOUT_SECONDS + (
+        DEFAULT_RENDER_SECONDS_PER_CITATION * citation_count
+    )
+    return min(MAX_RENDER_TIMEOUT_SECONDS, max(DEFAULT_TIMEOUT_SECONDS, estimate))
+
+
+def _timeout_seconds(action: str, arguments: dict[str, Any]) -> int:
+    """Read an explicit budget or calculate a citation-aware default."""
     raw = os.environ.get(TIMEOUT_ENV_VARIABLE, "").strip()
     if not raw:
-        return DEFAULT_TIMEOUT_SECONDS
+        return _default_timeout_seconds(action, arguments)
     try:
         value = int(raw)
     except ValueError:
-        _log(f"{TIMEOUT_ENV_VARIABLE}={raw!r} is not an integer; using {DEFAULT_TIMEOUT_SECONDS} seconds.")
-        return DEFAULT_TIMEOUT_SECONDS
+        fallback = _default_timeout_seconds(action, arguments)
+        _log(f"{TIMEOUT_ENV_VARIABLE}={raw!r} is not an integer; using {fallback} seconds.")
+        return fallback
     if value <= 0:
-        _log(f"{TIMEOUT_ENV_VARIABLE}={value} is not positive; using {DEFAULT_TIMEOUT_SECONDS} seconds.")
-        return DEFAULT_TIMEOUT_SECONDS
+        fallback = _default_timeout_seconds(action, arguments)
+        _log(f"{TIMEOUT_ENV_VARIABLE}={value} is not positive; using {fallback} seconds.")
+        return fallback
     return value
 
 
@@ -613,6 +675,8 @@ def _build_command(action: str, arguments: dict[str, Any], executable: str) -> l
         "manifest_path": "-ManifestPath",
         "library_path": "-LibraryPath",
         "style": "-Style",
+        "ris_path": "-RisPath",
+        "empty_library_template_path": "-EmptyLibraryTemplatePath",
     }
     for key, switch in mapping.items():
         value = arguments.get(key)
@@ -637,7 +701,7 @@ def _invoke_bridge(action: str, arguments: dict[str, Any], timeout: int | None =
         return {"ok": False, "action": action, "error": str(exc)}
 
     command = _build_command(action, arguments, executable)
-    effective_timeout = timeout or _timeout_seconds()
+    effective_timeout = timeout or _timeout_seconds(action, arguments)
     before = _snapshot_watched_pids()
     try:
         completed = subprocess.run(
@@ -847,7 +911,8 @@ def _handle(message: dict[str, Any]) -> dict[str, Any] | None:
                     "claim support and merged citations. Render into a new file, then validate. Citations "
                     "must be CWYW-produced ADDIN EN.CITE fields with a traveling library and an ADDIN "
                     "EN.REFLIST bibliography; never type citation text by hand. Word and EndNote editing "
-                    "runs silently, and the library is read-only."
+                    "runs silently. Library reads are read-only; explicit RIS import is performed by "
+                    "EndNote itself against the exact requested library."
                 ),
             },
         )

@@ -2,21 +2,22 @@
 
 [繁體中文](README-zhTW.md)
 
-EndNote for Word is an installable AI citation-management toolkit for Microsoft Word: a Claude Code, Claude Desktop, Codex, and ChatGPT Desktop skill/plugin plus MCP server that finds DOI-verified research papers, exports RIS for new EndNote libraries, and creates genuine EndNote Cite While You Write (CWYW) IEEE citations and bibliographies.
+EndNote for Word is an installable AI citation-management toolkit for Microsoft Word: a Claude Code, Claude Desktop, Codex, and ChatGPT Desktop skill/plugin plus MCP server that finds DOI-verified research papers, exports and imports RIS into EndNote libraries, and creates genuine EndNote Cite While You Write (CWYW) IEEE citations and bibliographies.
 
 ## What this tool does
 
-- Guides AI Agents to find peer-reviewed papers with their available scholarly-search or web tools, verify the metadata and DOI, and export EndNote-compatible RIS for users who do not have a library yet.
+- Guides AI Agents to find peer-reviewed papers, verify metadata and DOI, export EndNote-compatible RIS, and import it through EndNote Direct Export. With EndNote fully closed, a missing target library can be created from a verified empty library template.
 - Replaces `{{CITE:id}}` markers in a DOCX with real CWYW citations, so every citation becomes an `ADDIN EN.CITE` field carrying an EndNote traveling library, and the bibliography becomes an `ADDIN EN.REFLIST` field.
 - Never types citation text, never fabricates field codes in OOXML, and never passes off a plain-text reference list as a real bibliography.
-- Reads your `.enl` library read-only so an agent can search for references and confirm every record number before Word is ever opened.
+- Reads your `.enl` library through a read-only snapshot so an agent can search for references and confirm every record number before Word is ever opened. RIS import is the sole library-writing action and EndNote itself performs it.
 - Uses IEEE by default, requires a DOI for every cited reference, verifies each DOI through doi.org, and rejects doubled resolver prefixes.
 - Supports both IEEE Default Format `[x]` and EndNote's Display as Author (Year), which produces forms such as `Author et al. [x]` for narrative prose.
+- Preserves output-style-owned narrative punctuation. Forms such as `Hernandez, et al. [1]` are normal EndNote output and are not downgraded to typed authors or Default Format merely to remove a comma.
 - Pre-checks the manifest against the library and against the installed output styles, because an unknown record number or an unknown style name makes EndNote open a modal dialog that blocks automation until the process is killed.
 - Keeps Word hidden and starts EndNote with a hidden window when the bridge needs to launch it.
 - Switches the document output style programmatically and rebuilds the bibliography, with no dialog.
 - Validates the finished document structurally and reports counts, style, and the libraries recorded in the document.
-- Exports a RIS file so references that are not yet in your library can be imported in one step.
+- Exports and imports RIS, then reports before/after live-reference counts so the agent can re-query EndNote-assigned record numbers.
 
 ## Requirements
 
@@ -58,7 +59,7 @@ If you want to use EndNote for Word in Claude Code, Claude Desktop, Codex, or Ch
 Install or upgrade the EndNote for Word toolkit from https://github.com/felimet/endnote-for-word. Detect my available terminal and use PowerShell 7, Windows PowerShell 5.1, Bash on Windows including Git Bash, or CMD; prefer pwsh.exe when it exists and fall back to powershell.exe. From WSL Bash, invoke the Windows-side executable rather than Linux pwsh. If neither is available, stop and tell me to install PowerShell using https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows. Verify Microsoft Word desktop plus desktop EndNote with the Cite While You Write add-in, install the portable skill, register the local stdio MCP server, run the probe and the repository tests, preserve existing agent configuration, and report every changed file. Do not claim success unless the probe reports cwyw_macro_callable true and validation returns ok: true.
 ```
 
-If you have no library yet, ask the Agent to find a paper and export RIS first, as shown in the [quick test prompt](#quick-test-prompt). Otherwise, provide the DOCX and `.enl` paths directly. Tell the Agent your preferred EndNote output style, for example `IEEE` or `APA 7th` (`APA 7`). If you omit it, IEEE is used. The Agent must confirm that the style is installed before editing Word and must not silently substitute another style.
+If you have no target library yet, fully close EndNote and provide an empty `.enl` library that the Agent may clone as a template, as shown in the [quick test prompt](#quick-test-prompt). Otherwise, provide the DOCX and target `.enl` paths directly. Tell the Agent your preferred EndNote output style, for example `IEEE` or `APA 7th` (`APA 7`). If you omit it, IEEE is used. The Agent must confirm that the style is installed before editing Word and must not silently substitute another style.
 
 Platform-specific skill locations and MCP configuration are documented in the [installation matrix](skills/endnote-for-word/references/installation-matrix.md).
 
@@ -200,8 +201,8 @@ The manifest precheck refuses records whose EndNote DOI field already contains `
 |---|---|
 | No citation prefixes | The backslash prefix syntax, for example `{see \Thomsen, 2023 #1}`, opens a modal EndNote dialog that blocks automation. The manifest rejects `prefix` outright. |
 | No excluded authors or years | `{\Thomsen, 2023 #1}` and the `ENExcludeAuthor` family are dialog-driven and hang the run. Use `suffix` text instead when the style permits it. |
-| The library is read-only | The tool never writes to `.enl` files or their `.Data` directories. It copies the internal database to a temporary file, reads the copy, and deletes it. |
-| Adding references is semi-automatic | New references are exported to a RIS file that you import into EndNote yourself, through **File > Import**. The tool does not write into your library. |
+| Library database safety | Searches read a temporary snapshot. The tool never edits `sdb.eni`; explicit RIS import is delegated to EndNote Direct Export. |
+| Adding references is automated | `import_reference_file` opens the exact target library, sends RIS to EndNote, reports the count delta, and requires a fresh DOI search for assigned record numbers. A new target may be cloned only from a zero-record library while EndNote is fully closed. |
 | Bibliography position is the CWYW default | EndNote places the reference list where Cite While You Write puts it, normally at the end of the document. Move it in EndNote or in Word if you need it elsewhere; this tool does not relocate it. |
 | Instant formatting is not toggled | The CWYW toggle macro has no read-back, so calling it blindly would flip an unknown state. Change it in the EndNote ribbon if you need to. |
 | Converting citations to plain text is manual | The CWYW macro behind it, `ENRemoveFieldCodes`, raises a modal confirmation dialog and never returns under automation, so there is no `remove-field-codes` action and no MCP tool for it. Do it yourself from the Word ribbon with **EndNote > Convert Citations and Bibliography > Convert to Plain Text**, which produces a new copy and leaves the original field codes intact. The result is one-way: EndNote can no longer update the citations in the converted copy. |
@@ -218,10 +219,11 @@ The bridge preserves source files, writes through a temporary sibling DOCX, and 
 
 ## Quick test prompt
 
-This test starts without an EndNote library. Replace only the research topic and RIS output folder; the first stage needs no `.enl` file or DOCX:
+This test creates a new target from an empty EndNote library while EndNote is fully closed. Replace the research topic, target path, template path, and DOCX path:
 
 ```text
-Use the available scholarly-search or web tools to find one highly relevant peer-reviewed journal paper about "<research topic>". Do not invent metadata from memory; confirm the title, authors, journal, and year against the publisher page or a trusted scholarly index. The paper must have a DOI. Normalize it to a bare DOI and verify that https://doi.org/<DOI> resolves. I do not have an EndNote library yet, so use endnote-for-word to export the complete metadata as an EndNote-compatible RIS file in "<RIS output folder>", then pause and tell me how to create a library and import the RIS; never guess a rec_number. After I confirm the import and provide the .enl path plus a DOCX containing {{CITE:test}}, find the imported record in the library, insert a native EndNote citation using IEEE, and save a new output file. Use Display As: Author (Year) when the marker is the grammatical author subject; otherwise use Default Format. Keep Word and EndNote silent. Finally, validate the citation and bibliography fields and doi: https://doi.org/<DOI>, then report the result.
+Fully close EndNote before asking the Agent to create the missing target library.
+Use the available scholarly-search or web tools to find one highly relevant peer-reviewed journal paper about "<research topic>". Do not invent metadata from memory; confirm the title, authors, journal, and year against the publisher page or a trusted scholarly index. The paper must have a DOI. Normalize it to a bare DOI and verify that https://doi.org/<DOI> resolves. Export the complete metadata as EndNote-compatible RIS, then call import_reference_file with library_path "<new target .enl>", ris_path "<RIS path>", and empty_library_template_path "<closed empty .enl>". Search the new library by DOI and use only the returned rec_number. In "<DOCX path>", replace any existing plain-text narrative author plus typed number, such as `Li et al. [1]`, with one {{CITE:test}} marker. Insert a native EndNote citation using IEEE and save a new suffixed output file. Use Display As: Author (Year) when the marker is the grammatical author subject; otherwise use Default Format. Keep Word and EndNote silent. Finally, validate the citation and bibliography fields and doi: https://doi.org/<DOI>, then report the result.
 ```
 
 ## Repository layout

@@ -103,18 +103,35 @@
     },
     {
       "id": 7,
-      "tags": ["ris-import", "library-read-only"],
-      "prompt": "附件 fixture-references.ris 是本專案的 RIS 匯出範例。請比照它的格式，把我等一下提供的三筆新文獻寫成一份可匯入 EndNote 的 RIS 檔，並告訴我匯入步驟。你可以直接幫我把它們寫進 library 嗎？",
-      "expected_output": "A UTF-8 RIS file with CRLF line endings whose records start with TY and end with ER, produced through export_reference_import_file, plus a clear statement that the plugin never writes to an EndNote library and that import stays a manual step in EndNote.",
+      "tags": ["ris-import", "endnote-owned-write", "fresh-rec-number"],
+      "prompt": "附件 fixture-references.ris 是本專案的 RIS 匯出範例。請比照它的格式，把我提供的三筆新文獻匯入我指定的 EndNote library；若目標 library 還不存在，就先完全關閉 EndNote，再使用我指定的空白 library 建立新目標。匯入後請找出 EndNote 實際配置的 rec_number，不要叫我手動執行 File > Import。",
+      "expected_output": "A UTF-8 RIS file with CRLF line endings produced through export_reference_import_file, followed by import_reference_file against the exact target library and a fresh DOI search that returns only EndNote-assigned rec_numbers.",
       "files": [
         "tests/fixtures/fixture-references.ris"
       ],
       "expectations": [
         "Uses export_reference_import_file rather than hand-assembling RIS text in the reply.",
         "Produces UTF-8 RIS with CRLF line endings, TY first and ER last in every record, and one bare DO value even when the input DOI carried a resolver prefix.",
-        "States plainly that the library is read-only for this plugin and that the user performs the import in EndNote.",
-        "Explains that new rec_numbers only exist after the user imports, so no manifest can cite them beforehand.",
+        "Calls import_reference_file instead of delegating File > Import to the user, while EndNote itself remains the component that writes the database.",
+        "For a missing target, requires EndNote to be fully closed, supplies empty_library_template_path, and creates the new .enl plus .Data pair only from a zero-record template, including trash.",
+        "Searches the exact target again by DOI after import and uses only the rec_numbers returned by that fresh query.",
         "Does not invent rec_numbers for references that are not yet in the library."
+      ]
+    },
+    {
+      "id": 8,
+      "tags": ["existing-draft", "plain-text-citation", "author-year", "replacement"],
+      "prompt": "我的 Markdown 或 Word 草稿已有『Li et al. [1] 以聚丙烯製作……』。請改成 IEEE 的原生 EndNote 敘述式引用，不要讓作者名或舊的 [1] 重複出現。",
+      "expected_output": "The complete plain-text author phrase and typed number are replaced by one citation marker at the same grammatical position; render then turns that marker into one native EndNote author-year citation.",
+      "files": [
+        "tests/fixtures/single-manifest.json"
+      ],
+      "expectations": [
+        "Replaces the whole text 'Li et al. [1]' with one marker rather than appending a marker after the existing words.",
+        "Sets display to author-year for the single-target manifest entry because the citation is the grammatical subject.",
+        "Does not leave a typed author name, a typed [1], or a second adjacent author-year result.",
+        "Accepts style-owned punctuation such as 'Hernandez, et al. [1]' without pausing, questioning it, switching to default display, or restoring a plain-text author.",
+        "Lets ENAuthorYearFormat generate the visible author and number and validates the native EN.CITE field."
       ]
     }
   ]

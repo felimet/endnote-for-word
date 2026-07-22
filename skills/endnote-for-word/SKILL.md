@@ -1,21 +1,21 @@
 ---
 name: endnote-for-word
-description: "Find DOI-verified research papers with the Agent's available scholarly-search or web tools; export EndNote-compatible RIS for users without a library; and insert, format, update, restyle, inspect, or validate genuine EndNote Cite While You Write (CWYW) citations and bibliographies in Microsoft Word DOCX. Use for IEEE citations, visible https://doi.org links, Default Format [x], Display as Author (Year) forms such as Author et al. [x], silent Word and EndNote automation, ADDIN EN.CITE fields with traveling library payloads, ADDIN EN.REFLIST reference lists, rec-number lookups, output-style switching, merged citations, cited pages, and repairs that must avoid typed citation text, fabricated field codes, or fake plain-text bibliographies."
+description: "Find DOI-verified research papers with the Agent's available scholarly-search or web tools; export and import EndNote-compatible RIS into an existing library or a new library cloned from a verified empty template; and insert, format, update, restyle, inspect, or validate genuine EndNote Cite While You Write (CWYW) citations and bibliographies in Microsoft Word DOCX. Use for IEEE citations, visible https://doi.org links, Default Format [x], Display as Author (Year) forms such as Author et al. [x], silent Word and EndNote automation, ADDIN EN.CITE fields with traveling library payloads, ADDIN EN.REFLIST reference lists, rec-number lookups, output-style switching, merged citations, cited pages, and repairs that must avoid typed citation text, fabricated field codes, or fake plain-text bibliographies."
 license: MIT
 metadata:
   author: Jia-Ming Zhou (Felimet)
-  version: 1.1.0
+  version: 1.2.0
 ---
 
 # EndNote for Word
 
-Create real EndNote citations and a real bibliography in DOCX by driving EndNote 21 Cite While You Write through Word COM. Treat the source DOCX and the EndNote library as user data: write a new output file unless the user explicitly authorizes in-place replacement, and never write to the library at all.
+Create real EndNote citations and a real bibliography in DOCX by driving EndNote 21 Cite While You Write through Word COM. Treat the source DOCX and the EndNote library as user data: write a new output file unless the user explicitly authorizes in-place replacement. Library reads stay read-only; an explicitly requested RIS import is the only library-writing operation and must go through EndNote's own Direct Export route.
 
 ## Non-negotiable invariants
 
 - Citations must be CWYW-produced `ADDIN EN.CITE` fields carrying a traveling library payload, and the bibliography must be an `ADDIN EN.REFLIST` field. Nothing else counts as a citation.
 - Never type citation text, never fabricate field codes in OOXML, and never pass off a plain-text bibliography as a real one. A hand-written `(Author, 2023)` or a typed reference list is a failed deliverable, not a fallback.
-- The library is read-only. Every `rec_number` must come from `search_endnote_library` and must pass `precheck_endnote_manifest` before rendering. Never guess a rec-number from a PDF, a DOI, or memory.
+- Never edit `sdb.eni` or any other library database file directly. `import_reference_file` may add records only by opening the exact target library in EndNote and handing the RIS file to EndNote Direct Export. Every `rec_number` must still come from a fresh `search_endnote_library` call and pass `precheck_endnote_manifest`; never guess one from a PDF, DOI, sequence, or memory.
 - IEEE is the default output style. Every cited target must have a bare DOI such as `10.1109/5.771073`, and `precheck_endnote_manifest` must successfully resolve it through `https://doi.org/` before citation.
 - The visible bibliography form is exactly `doi: https://doi.org/<DOI>`. Reject missing DOI links and duplicated resolver prefixes such as `https://doi.org/https://doi.org/...`.
 - The output style must be verified with `list_endnote_styles` first. An unknown style name makes EndNote open a modal dialog and hangs the run, and no `DisplayAlerts` setting suppresses it.
@@ -55,10 +55,10 @@ Create real EndNote citations and a real bibliography in DOCX by driving EndNote
 2. Call `probe_endnote_word`. Pass `library_path` when the library is already known so the three `library_*` checks are filled in. Stop on a failed prerequisite and report the exact failed check. Exit code 2 means the environment is not ready, not that the document is wrong.
 3. Call `list_endnote_styles` and resolve the requested output style to an installed `.ens` name before anything else touches Word. If the user named a style that does not resolve, present the nearest matches and ask; do not substitute a style silently.
 4. Scan the complete document twice. First pass inventories every place that needs a citation and every existing citation already present. Second pass classifies each place as a single citation or a merged citation, chooses `display`, decides whether cited pages or a suffix are needed, and assigns one stable id and one unique marker per citation. Never start writing a manifest during the first pass.
-5. For every citation, call `search_endnote_library` to find candidate records and `get_endnote_reference` to confirm the exact record. Copy its `rec_number`, `first_author_surname`, year, and bare DOI into the target. A missing DOI makes the record ineligible.
+5. For every citation, call `search_endnote_library` to find candidate records and `get_endnote_reference` to confirm the exact record. If a needed record is absent and RIS is available, call `import_reference_file` on the exact target library, then search again. If the target library does not exist, first ensure EndNote is fully closed, then supply a zero-record library as `empty_library_template_path`; the tool creates a new `.enl` + `.Data` pair from it before import. Copy only the fresh search result's `rec_number`, `first_author_surname`, year, and bare DOI into the target. A missing DOI makes the record ineligible.
 6. Build a schema v1 JSON manifest. Read [workflow-and-schema.md](references/workflow-and-schema.md) for the exact contract and worked examples, and [temporary-citations.md](references/temporary-citations.md) for the supported temporary citation grammar.
 7. Call `precheck_endnote_manifest`. It verifies every target against the library and verifies each DOI online through doi.org before Word is opened. Fix every reported problem and re-run it; the pre-check reports all mismatches at once.
-8. Call `render_endnote_word_document`. Do not edit the same DOCX in Word while the render runs, and do not run two render jobs concurrently in the same Windows profile.
+8. Call `render_endnote_word_document`. Every shared formatting entry point refuses to call CWYW if any `{{CITE:...}}` remains, because braces are EndNote temporary-citation delimiters and an unmatched marker can open Select Matching Reference. Every document marker must therefore be in the manifest; for a subset test, use a scratch copy with every unselected marker removed. Do not edit the same DOCX in Word while the render runs, and do not run two render jobs concurrently in the same Windows profile.
 9. Call `validate_endnote_word_document` with the same manifest. A render is incomplete until validation returns `ok: true`. An output file that exists but fails validation is a diagnostic artifact, not a deliverable.
 10. Report the output path, the citation and target counts, the resolved style, whether the bibliography is present, whether EndNote was already running before the run (`endnote_preexisting`), the validation result, and any limitation that applies.
 
@@ -77,7 +77,8 @@ Use the bundled local MCP server when available:
 - `update_endnote_word_fields`: re-run CWYW formatting after the document text changed.
 - `set_endnote_citation_style`: switch the output style of an already formatted document.
 - `unformat_endnote_word_document`: revert formatted citations to temporary citation text, into a new file only.
-- `export_reference_import_file`: write a UTF-8 RIS file so the user can import new references into EndNote themselves.
+- `export_reference_import_file`: write a UTF-8 RIS file from structured reference metadata.
+- `import_reference_file`: open the exact target library and import a RIS file through EndNote Direct Export. It reports before/after live-reference counts. When the target is absent and EndNote is fully closed, it can first clone an empty library template whose total stored-reference count, including trash, is verified as zero.
 
 If MCP is unavailable, invoke the same bridge directly from the plugin root. Resolve every variable from the user's attached or repository files and never reuse a sample path literally.
 
@@ -87,6 +88,7 @@ pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File script
 pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action list-styles -Style $styleFilter
 pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action render -InputPath $inputDocx -OutputPath $outputDocx -ManifestPath $manifestJson
 pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action validate -InputPath $outputDocx -ManifestPath $manifestJson
+pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action import-ris -LibraryPath $library -RisPath $ris
 ```
 
 ```powershell
@@ -101,7 +103,8 @@ python scripts\endnote_library.py precheck --library $library --manifest $manife
 - Use collision-resistant visible markers such as `{{CITE:thomsen2023}}`. Each marker must occur exactly once in the document. Never reuse a marker.
 - One `citations[]` entry with several `targets[]` is a merged citation and renders as one field. Do not emit two adjacent citations when the user wants one merged parenthesis.
 - Each target needs an integer `rec_number` greater than zero, a non-empty `author` surname, an integer `year`, and a bare `doi`. The DOI field must not contain `doi:` or a resolver URL.
-- Set `display` to `author-year` only when the citation itself is a grammatical subject or named actor, for example `{{CITE:smith}} demonstrated ...`, which IEEE renders as `Smith et al. [1] demonstrated ...`. The marker replaces the author phrase; do not write `Smith {{CITE:smith}}` or the name will be duplicated.
+- Set `display` to `author-year` only when the citation itself is a grammatical subject or named actor. Replace the complete existing plain-text author phrase and any legacy typed citation number with the marker. For example, change `Li et al. [1] 以聚丙烯...` to `{{CITE:li2024}} 以聚丙烯...`; IEEE then lets EndNote render `Li et al. [n] 以聚丙烯...`. Never leave `Li et al.` or `[1]` beside the marker, and never write `Smith {{CITE:smith}}`, because EndNote would duplicate the author or retain a fake number.
+- Treat exact `author-year` punctuation as output-style-owned and valid. IEEE may render `Hernandez, et al. [1]` with a comma before `et al.` even when the source prose used `Hernandez et al.`. Do not flag this as suspicious, pause for confirmation, propose `display: default`, or restore a plain-text author merely to remove the comma. Change it only when the user explicitly requests a different installed output style or asks to revise the style itself.
 - Set `display` to `default` when the reference supports a claim, normally at the clause or sentence boundary, for example `The method is stable {{CITE:smith}}`, which IEEE renders as `The method is stable [1]`.
 - Merged citations always use `display: default`. `author-year` requires exactly one target. When the prose is ambiguous, rewrite the sentence so the grammatical role is explicit before choosing.
 - `pages` supplies EndNote cited pages and must match `^[0-9]+(\s*-\s*[0-9]+)?$`. It renders as `@45-46` inside the temporary citation.
@@ -119,6 +122,7 @@ python scripts\endnote_library.py precheck --library $library --manifest $manife
 - The document's output style lives in a Word document variable named `EN.Layout` holding an `<ENLayout>` XML fragment. The bridge reads it, replaces the `<Style>` element, and re-runs `ENFormatBibliography`. No dialog is involved.
 - Always resolve the style name against the installed `.ens` files first. `list_endnote_styles` is the authority, not the user's spelling and not a remembered style list.
 - Switching style rewrites both the in-text citations and the whole bibliography. Under IEEE, `display: default` yields `[1]`; `display: author-year` invokes EndNote's `ENAuthorYearFormat` and yields a form such as `Thomsen et al. [1]`.
+- Author-list punctuation is not a validation failure. Accept comma placement and `et al.` punctuation exactly as EndNote returns them for the active style; validation checks the author surname and native field structure, not whether punctuation matches the former plain text.
 - Use `set_endnote_citation_style` on an already formatted document rather than re-rendering from the source. Re-rendering repeats the marker work for no gain.
 - A second document variable named `EN.Libraries` records which library and which record ids were used. Do not edit it by hand; it is the provenance evidence used by validation gate 8.
 - Both variables persist in `word/settings.xml` as `w:docVar` entries, so the style and the record ids are also readable offline without Word.
@@ -159,7 +163,7 @@ Treat any of these as a failed deliverable. `validate` returns `ok: false` and e
 - The two usual causes of a hang are a rec-number that does not exist in the library and a style name that does not resolve to an installed `.ens` file. Both are prevented by steps 3 and 7 of the workflow, so a hang means a step was skipped.
 - If the bridge reports a timeout, record the isolated PIDs and the cleanup result, re-run `precheck_endnote_manifest`, then retry only the smallest failing citation once before escalating.
 - If EndNote was already running when the render started, the bridge reports `endnote_preexisting: true` and does not force it to switch libraries. If the citations formatted against the wrong library, ask the user to open the intended library and re-run rather than closing their EndNote for them.
-- If a needed reference is genuinely absent from the library, do not invent a rec-number. Use `export_reference_import_file` to produce a RIS file and ask the user to import it, then search again. Read [library-import.md](references/library-import.md).
+- If a needed reference is genuinely absent from the library, do not invent a rec-number. Use `export_reference_import_file` when RIS must be generated, call `import_reference_file` on the exact library, then search again. A zero `imported_count` returns `ok: false`; search by DOI before retrying because the records may already exist, otherwise repair the RIS and retry once. Read [library-import.md](references/library-import.md).
 - Word COM is single-user desktop automation. It needs an unlocked interactive desktop session and one job at a time in a given Windows profile.
 - Console output on Windows may default to a legacy code page. Every entry point forces UTF-8; if output is mojibake, the caller bypassed an entry point.
 - Read [cwyw-entrypoints.md](references/cwyw-entrypoints.md) before attempting any CWYW call the bridge does not already wrap.

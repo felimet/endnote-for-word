@@ -237,10 +237,13 @@ wrapped in try/catch because 5.1 can throw when stdout is redirected.
 **`AddIns.Add` double loads the template.** Calling `$word.AddIns.Add(...)` on
 `EndNote Cwyw.dotm` loads a template Word has already loaded. Never call it.
 
-**EndNote may already be running with a different library.** When an EndNote process owns
-a main window, the bridge does not start a second instance and does not force a library
-switch. It records `endnote_preexisting: true` and proceeds. The user's open library is
-their business, and forcing a switch would be a destructive act on user state.
+**EndNote may already be running with a different library.** Render, update, and style
+actions do not force-switch a user's existing EndNote session; they record
+`endnote_preexisting: true` and proceed under the safeguards described below. The explicit
+`import-ris` action is different: importing authorizes mutation of the named library, so it
+opens that exact `.enl` path and confirms EndNote's most-recent-library registry value before
+passing the RIS file to Direct Export. A matching window title alone is not sufficient,
+because unrelated libraries can share a filename.
 
 **CWYW silently auto-launches EndNote when it is closed.** `ENFormatBibliography` was
 measured to succeed with no EndNote process running: CWYW starts EndNote itself, with the

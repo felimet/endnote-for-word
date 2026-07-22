@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 PACKAGE_NAME = "endnote-for-word"
-RELEASE_VERSION = "1.1.0"
+RELEASE_VERSION = "1.2.0"
 RELEASE_AUTHOR = "Jia-Ming Zhou (Felimet)"
 SKILL_DIRECTORY = ROOT / "skills" / PACKAGE_NAME
 SKILL_PATH = SKILL_DIRECTORY / "SKILL.md"
@@ -57,6 +57,7 @@ REQUIRED_BRIDGE_FUNCTIONS = (
     "Invoke-ManifestPrecheck",
     "Get-TemporaryCitationText",
     "Get-CitationMarkerPlans",
+    "Assert-NoUnresolvedCitationMarkers",
     "Set-CitationDisplayFormats",
     "Find-UniqueMarkerRange",
     "Get-InstalledStyles",
@@ -67,6 +68,9 @@ REQUIRED_BRIDGE_FUNCTIONS = (
     "Invoke-CwywFormat",
     "Get-CitationFields",
     "Get-ValidationReport",
+    "Get-EndNoteRecordCount",
+    "Resolve-EndNoteImportLibrary",
+    "Open-EndNoteLibraryForImport",
     "Save-DocumentAtomically",
 )
 
@@ -79,6 +83,7 @@ REQUIRED_BRIDGE_ACTIONS = (
     "update",
     "set-style",
     "unformat",
+    "import-ris",
 )
 
 # Build spec section 0.6b: ENRemoveFieldCodes raises a modal confirmation dialog and never
