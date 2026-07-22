@@ -1397,7 +1397,11 @@ function Get-CitationMarkerPlans {
         $marker = [string](Get-OptionalProperty -Object $citation -Name 'marker')
         $range = Find-UniqueMarkerRange -Marker $marker
         try {
-            $plans.Add([ordered]@{
+            # Must be a PSCustomObject: Sort-Object -Property cannot see the keys of an
+            # [ordered] dictionary, so sorting plans by 'start' silently returns them in
+            # manifest order. Replacing forwards then shifts every later offset and the
+            # remaining markers get written over the wrong text.
+            $plans.Add([pscustomobject][ordered]@{
                     citation = $citation
                     start    = [int]$range.Start
                     end      = [int]$range.End
