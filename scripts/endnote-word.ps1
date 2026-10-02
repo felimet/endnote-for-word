@@ -1200,7 +1200,9 @@ function Read-Manifest {
     param([Parameter(Mandatory)][string]$Path)
     $resolved = Resolve-ExistingFile -Path $Path -Label 'ManifestPath'
     $manifest = $null
-    try { $manifest = Get-Content -Raw -LiteralPath $resolved | ConvertFrom-Json }
+    # -Encoding UTF8: Windows PowerShell 5.1 would otherwise read a BOM-less UTF-8 manifest with
+    # the system ANSI codepage, which mangles non-ASCII author names into invalid JSON.
+    try { $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $resolved | ConvertFrom-Json }
     catch { throw "ManifestPath is not valid JSON ($resolved): $($_.Exception.Message)" }
     if ($null -eq $manifest) { throw "ManifestPath is empty: $resolved" }
     $schemaVersion = Get-OptionalProperty -Object $manifest -Name 'schema_version'
