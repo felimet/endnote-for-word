@@ -831,9 +831,50 @@ function Save-DocumentAtomically {
     $script:TemporarySavePath = $temporary
     $script:TemporarySaveDestination = $Destination
     try {
-        Write-Log -Level INFO -Message "Saving temporary DOCX: $temporary"
-        $script:Document.SaveAs2($temporary, $script:WdFormatXmlDocument)
-        Write-Log -Level INFO -Message 'Word SaveAs2 returned.'
+        if ($env:ENDNOTE_SAVE_VIA_FLATXML -eq '1') {
+            # Some Word installations never return from SaveAs2 for documents that contain EndNote
+            # CWYW fields: Word spins inside the save-time "format bibliography" step and the
+            # process cannot even be terminated. Range.WordOpenXML serializes the same document
+            # in ~0.2 s without touching the save path, so this opt-in fallback extracts the
+            # flat-OPC XML and lets an external converter assemble the DOCX package.
+            # Default behaviour is unchanged.
+            $converter = [string]$env:ENDNOTE_FLATXML_CONVERTER
+            if ([string]::IsNullOrWhiteSpace($converter) -or -not (Test-Path -LiteralPath $converter -PathType Leaf)) {
+                throw "ENDNOTE_SAVE_VIA_FLATXML=1 requires ENDNOTE_FLATXML_CONVERTER to point at flatopc_to_docx.py (got: '$converter')."
+            }
+            $flatPath = $temporary + '.flat.xml'
+            Write-Log -Level INFO -Message "Saving through the flat-OPC fallback: $flatPath"
+            [IO.File]::WriteAllText($flatPath, [string]$script:Document.Content.WordOpenXML, [Text.UTF8Encoding]::new($false))
+            $python = Resolve-PythonExecutable
+            # The flat XML only carries the parts needed for the range, so the working copy is
+            # handed to the converter as the base package; missing parts (docProps, numbering,
+            # headers) come from there and Word accepts the result.
+            $basePackage = $script:WorkingCopyPath
+            if ([string]::IsNullOrWhiteSpace($basePackage) -or -not (Test-Path -LiteralPath $basePackage -PathType Leaf)) {
+                $basePackage = $script:TemporarySaveDestination
+            }
+            $arguments = @(
+                (ConvertTo-ProcessArgument -Value $converter),
+                (ConvertTo-ProcessArgument -Value $flatPath),
+                (ConvertTo-ProcessArgument -Value $temporary),
+                '--base',
+                (ConvertTo-ProcessArgument -Value $basePackage)
+            ) -join ' '
+            $captured = Invoke-HiddenProcess -Executable $python -Arguments $arguments
+            if (-not [string]::IsNullOrWhiteSpace($captured.stderr)) {
+                Write-Log -Level INFO -Message $captured.stderr.Trim()
+            }
+            if ($captured.exit_code -ne 0 -or -not (Test-Path -LiteralPath $temporary -PathType Leaf)) {
+                throw "flat-OPC conversion failed (exit $($captured.exit_code)): $($captured.stdout.Trim())"
+            }
+            Remove-Item -LiteralPath $flatPath -Force -ErrorAction SilentlyContinue
+            Write-Log -Level INFO -Message 'flat-OPC conversion returned.'
+        }
+        else {
+            Write-Log -Level INFO -Message "Saving temporary DOCX: $temporary"
+            $script:Document.SaveAs2($temporary, $script:WdFormatXmlDocument)
+            Write-Log -Level INFO -Message 'Word SaveAs2 returned.'
+        }
         Stop-Word
         Move-Item -LiteralPath $temporary -Destination $Destination -Force
         Write-Log -Level INFO -Message "Moved completed DOCX to: $Destination"
@@ -1200,7 +1241,9 @@ function Read-Manifest {
     param([Parameter(Mandatory)][string]$Path)
     $resolved = Resolve-ExistingFile -Path $Path -Label 'ManifestPath'
     $manifest = $null
-    try { $manifest = Get-Content -Raw -LiteralPath $resolved | ConvertFrom-Json }
+    # -Encoding UTF8: Windows PowerShell 5.1 would otherwise read a BOM-less UTF-8 manifest with
+    # the system ANSI codepage, which mangles non-ASCII author names into invalid JSON.
+    try { $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $resolved | ConvertFrom-Json }
     catch { throw "ManifestPath is not valid JSON ($resolved): $($_.Exception.Message)" }
     if ($null -eq $manifest) { throw "ManifestPath is empty: $resolved" }
     $schemaVersion = Get-OptionalProperty -Object $manifest -Name 'schema_version'
