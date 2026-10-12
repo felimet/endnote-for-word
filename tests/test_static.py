@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 PACKAGE_NAME = "endnote-for-word"
-RELEASE_VERSION = "1.2.0"
+RELEASE_VERSION = "1.3.0"
 RELEASE_AUTHOR = "Jia-Ming Zhou (Felimet)"
 SKILL_DIRECTORY = ROOT / "skills" / PACKAGE_NAME
 SKILL_PATH = SKILL_DIRECTORY / "SKILL.md"

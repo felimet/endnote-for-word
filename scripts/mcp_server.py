@@ -25,7 +25,7 @@ from typing import Any, BinaryIO
 
 
 SERVER_NAME = "endnote-for-word"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 SCRIPT_PATH = Path(__file__).with_name("endnote-word.ps1")
 SCRIPT_DIRECTORY = SCRIPT_PATH.parent
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"

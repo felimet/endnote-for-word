@@ -243,7 +243,7 @@ Bridge 會保留來源檔，透過同層暫存 DOCX 完成儲存；除非明確�
 python scripts/package_plugin.py
 ```
 
-命令會產生 `dist/endnote-for-word-plugin.zip` 及 SHA-256 檔。獨立 skill 套件為 `dist/endnote-for-word.skill`。
+命令會產生 `dist/endnote-for-word-plugin.zip`、獨立 skill 套件 `dist/endnote-for-word.skill`，以及各自的 SHA-256 檔。版本異動見 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 問題與交流
 

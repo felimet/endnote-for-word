@@ -243,7 +243,7 @@ Use the available scholarly-search or web tools to find one highly relevant peer
 python scripts/package_plugin.py
 ```
 
-The command creates `dist/endnote-for-word-plugin.zip` and its SHA-256 file. The standalone skill package is `dist/endnote-for-word.skill`.
+The command creates `dist/endnote-for-word-plugin.zip`, the standalone skill package `dist/endnote-for-word.skill`, and a SHA-256 file for each. Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Issues and discussion
 

@@ -25,7 +25,7 @@ BRIDGE = ROOT / "scripts" / "endnote-word.ps1"
 POWERSHELL_ENV_VARIABLE = "ENDNOTE_WORD_POWERSHELL"
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "endnote-for-word"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5
 
 STUB_RESULT = {"ok": True, "action": "stub", "checks": {"stub_bridge": True}}
