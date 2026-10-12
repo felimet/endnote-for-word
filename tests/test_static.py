@@ -374,6 +374,11 @@ class BridgeContractTests(unittest.TestCase):
             with self.subTest(reader=reader):
                 self.assertIsNone(re.search(reader, code))
 
+    def test_bridge_hands_out_plain_file_system_paths(self) -> None:
+        # (Resolve-Path).Path is provider-qualified for UNC files, which Python and Word reject.
+        code = strip_powershell_literals(BRIDGE_PATH.read_text(encoding="utf-8"))
+        self.assertIsNone(re.search(r"\bResolve-Path\b", code))
+
     def test_bridge_never_calls_a_modal_endnote_macro(self) -> None:
         text = BRIDGE_PATH.read_text(encoding="utf-8")
         for macro in (

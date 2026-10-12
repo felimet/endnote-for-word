@@ -246,7 +246,11 @@ function Resolve-ExistingFile {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "$Label does not exist: $Path"
     }
-    return (Resolve-Path -LiteralPath $Path).Path
+    # Resolve-Path reports a UNC file as Microsoft.PowerShell.Core\FileSystem::\\server\...,
+    # which Python, Word and .NET cannot open. Convert-Path yields the plain file system path,
+    # and GetFullPath normalizes it the way Resolve-OutputFile does, 8.3 short names included,
+    # so the input and output comparisons that guard against in-place writes stay sound.
+    return [IO.Path]::GetFullPath((Convert-Path -LiteralPath $Path))
 }
 
 function Resolve-OutputFile {
@@ -303,9 +307,9 @@ function Read-StrictUtf8Text {
     # strict encoding, so UTF-16 files and invalid bytes, BOM or not, fail here instead of
     # passing with corrupted names.
     $strictUtf8 = New-Object System.Text.UTF8Encoding($true, $true)
-    # Resolve-Path reports a UNC file as Microsoft.PowerShell.Core\FileSystem::\\server\...,
-    # which .NET cannot open; Convert-Path yields the plain file system path. ReadWrite sharing
-    # matches Get-Content, so a file another program holds open for writing stays readable.
+    # Convert-Path resolves relative and provider-qualified paths against the PowerShell
+    # location, which .NET does not see. ReadWrite sharing matches Get-Content, so a file
+    # another program holds open for writing stays readable.
     $stream = $null
     try {
         $stream = New-Object System.IO.FileStream((Convert-Path -LiteralPath $Path), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
@@ -358,7 +362,7 @@ function Resolve-PythonExecutable {
         if (-not (Test-Path -LiteralPath $configured -PathType Leaf)) {
             throw "$($script:PythonEnvironmentVariable) does not point to a Python executable: $configured"
         }
-        return (Resolve-Path -LiteralPath $configured).Path
+        return (Convert-Path -LiteralPath $configured)
     }
 
     foreach ($candidate in $script:PythonCandidates) {
@@ -523,13 +527,13 @@ function Resolve-EndNoteDirectory {
     try {
         if (Test-Path -LiteralPath $candidate -PathType Container) {
             if (Test-Path -LiteralPath (Join-Path $candidate $script:EndNoteExecutableName) -PathType Leaf) {
-                return (Resolve-Path -LiteralPath $candidate).Path
+                return (Convert-Path -LiteralPath $candidate)
             }
             return $null
         }
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
             if ([IO.Path]::GetFileName($candidate) -ieq $script:EndNoteExecutableName) {
-                return (Resolve-Path -LiteralPath (Split-Path -Parent $candidate)).Path
+                return (Convert-Path -LiteralPath (Split-Path -Parent $candidate))
             }
         }
     }
@@ -676,9 +680,10 @@ function Get-CwywTemplatePath {
 
 function Get-LibraryDataDirectory {
     param([Parameter(Mandatory)][string]$LibraryFile)
-    $parent = Split-Path -Parent $LibraryFile
+    # String path APIs: Windows PowerShell 5.1's Join-Path rejects a plain \\?\ parent.
+    $parent = [IO.Path]::GetDirectoryName($LibraryFile)
     $stem = [IO.Path]::GetFileNameWithoutExtension($LibraryFile)
-    return (Join-Path $parent ($stem + $script:LibraryDataDirectorySuffix))
+    return [IO.Path]::Combine($parent, $stem + $script:LibraryDataDirectorySuffix)
 }
 
 function Assert-EndNoteLibrary {

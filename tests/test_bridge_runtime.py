@@ -1,12 +1,15 @@
 """Offline runtime tests for bridge helpers that need a PowerShell host but not Word.
 
 Invoke-HiddenProcess is lifted out of the bridge through the PowerShell AST and run against a
-Python child.
+Python child. The UNC test drives -Action import-ris, which rejects a non-.ris file before
+EndNote is ever looked up, and echoes the resolved path in its error.
 """
 
 from __future__ import annotations
 
+import ctypes
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -60,6 +63,15 @@ def last_json_line(completed: subprocess.CompletedProcess) -> dict:
     return json.loads(lines[-1])
 
 
+def short_path(path: Path) -> str | None:
+    """Return the 8.3 alias of an existing path, or None when the volume generates none."""
+    if sys.platform != "win32":
+        return None
+    buffer = ctypes.create_unicode_buffer(32768)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer)):
+        return None
+    return None if buffer.value.lower() == str(path).lower() else buffer.value
+
 
 class BridgeRuntimeTests(unittest.TestCase):
     @classmethod
@@ -96,6 +108,55 @@ class BridgeRuntimeTests(unittest.TestCase):
                 self.assertEqual(result["exit_code"], 0)
                 self.assertEqual(result["stdout"], "child-done")
                 self.assertEqual(result["stderr_length"], CHILD_STDERR_BYTES)
+
+    def test_unc_paths_resolve_to_plain_file_system_paths(self) -> None:
+        local = self.workspace / "references.txt"
+        local.write_text("TY  - JOUR\nER  - \n", encoding="utf-8")
+        resolved = str(local.resolve())
+        if len(resolved) < 3 or resolved[1:3] != ":\\":
+            self.skipTest(f"The workspace is not on a drive letter: {resolved}")
+        unc = "\\\\localhost\\" + resolved[0] + "$" + resolved[2:]
+        # os.path.isfile turns access denied into False; Path.is_file raises on it.
+        if not os.path.isfile(unc):
+            self.skipTest("The administrative share \\\\localhost\\<drive>$ is not reachable.")
+        for host in self.hosts:
+            with self.subTest(host=Path(host).name):
+                completed = run_host(
+                    host,
+                    [
+                        "-File", str(BRIDGE),
+                        "-Action", "import-ris",
+                        "-LibraryPath", str(self.workspace / "Library.enl"),
+                        "-RisPath", unc,
+                    ],
+                )
+                result = last_json_line(completed)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"], f"RisPath must use the .ris extension: {unc}")
+
+    def test_unformat_refuses_an_output_that_aliases_its_input_through_a_short_name(self) -> None:
+        directory = self.workspace / "endnote long directory name"
+        directory.mkdir(exist_ok=True)
+        document = directory / "paper.docx"
+        document.write_bytes(b"")
+        alias = short_path(directory)
+        if alias is None:
+            self.skipTest("The volume does not generate 8.3 names.")
+        for host in self.hosts:
+            with self.subTest(host=Path(host).name):
+                completed = run_host(
+                    host,
+                    [
+                        "-File", str(BRIDGE),
+                        "-Action", "unformat",
+                        "-InputPath", os.path.join(alias, document.name),
+                        "-OutputPath", str(document),
+                        "-Overwrite",
+                    ],
+                )
+                result = last_json_line(completed)
+                self.assertFalse(result["ok"])
+                self.assertTrue(result["error"].startswith("unformat is destructive"), result["error"])
 
 
 if __name__ == "__main__":
