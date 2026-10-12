@@ -26,7 +26,7 @@ SKILL_MAXIMUM_LINES = 500
 MINIMUM_FILE_BACKED_EVALS = 6
 
 PROSE_SUFFIXES = {".md", ".json", ".yaml", ".yml", ".py", ".ps1", ".txt", ".ris"}
-IGNORED_DIRECTORIES = {".git", "__pycache__", ".venv", "node_modules"}
+IGNORED_DIRECTORIES = {".git", ".claude", "__pycache__", ".venv", "node_modules"}
 
 EM_DASH = "—"
 EN_DASH = "–"
@@ -110,7 +110,8 @@ def iter_repository_files(suffixes: set[str]) -> list[Path]:
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue
-        if IGNORED_DIRECTORIES.intersection(path.parts):
+        # Relative parts: the checkout itself may live under .claude/worktrees.
+        if IGNORED_DIRECTORIES.intersection(path.relative_to(ROOT).parts):
             continue
         if path.suffix.lower() in suffixes:
             found.append(path)
