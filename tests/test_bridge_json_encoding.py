@@ -62,6 +62,8 @@ class BridgeJsonEncodingTests(unittest.TestCase):
         return path
 
     def run_render(self, host: str, manifest_path: Path, environment: dict | None = None) -> dict:
+        # Never let a test start the real PowerShell 7 auto-install on a machine without pwsh.
+        environment = {**(environment or os.environ), "ENDNOTE_WORD_AUTO_INSTALL_PWSH": "0"}
         completed = subprocess.run(
             [
                 host,

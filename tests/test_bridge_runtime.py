@@ -53,6 +53,8 @@ def run_host(host: str, arguments: list[str]) -> subprocess.CompletedProcess:
         errors="replace",
         timeout=CHILD_TIMEOUT_SECONDS,
         check=False,
+        # Never let a test start the real PowerShell 7 auto-install on a machine without pwsh.
+        env={**os.environ, "ENDNOTE_WORD_AUTO_INSTALL_PWSH": "0"},
     )
 
 

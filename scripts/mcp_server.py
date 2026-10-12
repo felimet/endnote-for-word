@@ -33,13 +33,23 @@ DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 # PowerShell selection. PowerShell 7 is preferred, Windows PowerShell 5.1 is accepted;
 # the bridge is written to parse and run under both.
 POWERSHELL_ENV_VARIABLE = "ENDNOTE_WORD_POWERSHELL"
-POWERSHELL_CANDIDATES = ("pwsh.exe", "powershell.exe")
+POWERSHELL_7_EXECUTABLE = "pwsh.exe"
+POWERSHELL_CANDIDATES = (POWERSHELL_7_EXECUTABLE, "powershell.exe")
+# Where a PowerShell 7 can appear while the server runs, even if PATH was captured before:
+# the per-user MSIX app execution alias that winget installs, then the MSI location.
+POWERSHELL_7_KNOWN_LOCATIONS = (
+    ("LOCALAPPDATA", ("Microsoft", "WindowsApps", POWERSHELL_7_EXECUTABLE)),
+    ("ProgramFiles", ("PowerShell", "7", POWERSHELL_7_EXECUTABLE)),
+)
 POWERSHELL_INSTALL_URL = (
     "https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows"
 )
 
 # Bridge process budget. EndNote can take a long time to open a large library before the
 # first ENFormatBibliography call returns, hence the generous default.
+# The bridge also prints its PowerShell 7 notice to stderr behind this marker, so the notice
+# survives a call that times out before the JSON result line is written.
+POWERSHELL_NOTICE_MARKER = "POWERSHELL_NOTICE="
 TIMEOUT_ENV_VARIABLE = "ENDNOTE_WORD_TIMEOUT_SECONDS"
 PYTHON_ENV_VARIABLE = "ENDNOTE_WORD_PYTHON"
 DEFAULT_TIMEOUT_SECONDS = 240
@@ -512,17 +522,53 @@ def _force_utf8_streams() -> None:
             print(f"[{SERVER_NAME}] could not force UTF-8 on a stream: {exc}", file=sys.stderr)
 
 
+def _powershell_notice_from_stderr(stderr: str) -> dict[str, Any] | None:
+    """Recover the bridge's PowerShell 7 notice from stderr when no result line arrived."""
+    for line in reversed(stderr.splitlines()):
+        if line.startswith(POWERSHELL_NOTICE_MARKER):
+            try:
+                notice = json.loads(line[len(POWERSHELL_NOTICE_MARKER):])
+            except json.JSONDecodeError:
+                _log(f"Ignoring a malformed PowerShell 7 notice on stderr: {line[:200]}")
+                return None
+            return notice if isinstance(notice, dict) else None
+    return None
+
+
+def _with_powershell_notice(result: dict[str, Any], stderr: str) -> dict[str, Any]:
+    notice = _powershell_notice_from_stderr(stderr)
+    if notice is not None:
+        result["powershell_notice"] = notice
+    return result
+
+
+def _known_powershell_7_paths() -> list[Path]:
+    """Return the fixed PowerShell 7 locations whose root variable is set."""
+    paths = []
+    for variable, parts in POWERSHELL_7_KNOWN_LOCATIONS:
+        root = os.environ.get(variable, "").strip()
+        if root:
+            paths.append(Path(root, *parts))
+    return paths
+
+
 def _powershell_executable() -> str:
     """Return the PowerShell host to run the bridge with.
 
     Preference order is the explicit override, then PowerShell 7, then Windows PowerShell 5.1.
-    The bridge itself is 5.1 compatible, so accepting the older host is safe.
+    The bridge itself is 5.1 compatible, so accepting the older host is safe. Resolution runs
+    on every call, so a PowerShell 7 installed by the bridge's background install takes over
+    from the next call without a server restart.
     """
     override = os.environ.get(POWERSHELL_ENV_VARIABLE, "").strip()
     if override:
         return override
     for candidate in POWERSHELL_CANDIDATES:
         resolved = shutil.which(candidate)
+        if not resolved and candidate == POWERSHELL_7_EXECUTABLE:
+            resolved = next(
+                (str(path) for path in _known_powershell_7_paths() if path.is_file()), None
+            )
         if resolved:
             return resolved
     raise RuntimeError(
@@ -727,7 +773,7 @@ def _invoke_bridge(action: str, arguments: dict[str, Any], timeout: int | None =
         if word_process_id is None and len(new_word_pids) == 1:
             word_process_id = new_word_pids[0]
         terminated = observed.get("terminated", [])
-        return {
+        return _with_powershell_notice({
             "ok": False,
             "action": action,
             "error": (
@@ -741,7 +787,7 @@ def _invoke_bridge(action: str, arguments: dict[str, Any], timeout: int | None =
             "new_endnote_pids_observed": observed.get("EndNote.exe", []),
             "isolated_processes_terminated": terminated,
             "stderr_tail": stderr[-STDERR_EXCERPT_CHARACTERS:],
-        }
+        }, stderr)
     except OSError as exc:
         return {
             "ok": False,
@@ -753,12 +799,12 @@ def _invoke_bridge(action: str, arguments: dict[str, Any], timeout: int | None =
         _log(completed.stderr.strip())
     lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
     if not lines:
-        return {
+        return _with_powershell_notice({
             "ok": False,
             "action": action,
             "error": f"Bridge returned no JSON (exit {completed.returncode}).",
             "stderr_tail": completed.stderr[-STDERR_EXCERPT_CHARACTERS:],
-        }
+        }, completed.stderr)
     try:
         result = json.loads(lines[-1])
     except json.JSONDecodeError as exc:
@@ -912,7 +958,10 @@ def _handle(message: dict[str, Any]) -> dict[str, Any] | None:
                     "must be CWYW-produced ADDIN EN.CITE fields with a traveling library and an ADDIN "
                     "EN.REFLIST bibliography; never type citation text by hand. Word and EndNote editing "
                     "runs silently. Library reads are read-only; explicit RIS import is performed by "
-                    "EndNote itself against the exact requested library."
+                    "EndNote itself against the exact requested library. When a result carries "
+                    "powershell_notice, tell the user its message: under Windows PowerShell 5.1 "
+                    "without pwsh.exe, read-only calls announce a PowerShell 7 install and the first "
+                    "call that edits a document starts it in the background."
                 ),
             },
         )

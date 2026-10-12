@@ -26,6 +26,7 @@
 | `probe` returns `endnote_running: false` | EndNote desktop has no process with a main window | `render` starts it. For other actions start it manually. See section 5. |
 | Citations format against records that are not the ones you chose | EndNote has a different library open | Close the other library, open the manifest library, re-render. See section 6. |
 | Save fails with an access or sharing error | The output DOCX is open in Word or held by another process | Close it or pick a new output path. See section 7. |
+| `powershell_notice` reports `failed` or `unavailable` | The automatic PowerShell 7 install could not run or finish | The bridge keeps working under Windows PowerShell 5.1. Install PowerShell 7 by hand, or delete the state file the notice names to retry once. See installation-matrix.md. |
 | Chinese text in the console renders as garbage | Console code page is cp950 | Force UTF-8 in the terminal. See section 8. |
 | `WINWORD.EXE` remains after a failed job | A COM call blocked and the process was orphaned | Kill only the PID the failed job created. See section 9. |
 | Timeout whose `stderr_tail` ends at `Saving temporary DOCX` | Word's `SaveAs2` never returned; on Windows PowerShell 5.1 it followed passing uncast `Join-Path` output as the file name | Update the bridge, prefer PowerShell 7, and clear Word's recovery state after the kill. See section 9. |

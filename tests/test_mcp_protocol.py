@@ -256,6 +256,52 @@ class McpProtocolTests(unittest.TestCase):
             if previous is not None:
                 os.environ["ENDNOTE_WORD_TIMEOUT_SECONDS"] = previous
 
+    def test_powershell_notice_survives_a_bridge_timeout(self) -> None:
+        if os.name != "nt":
+            self.skipTest("The stub bridge is a Windows batch file.")
+        server = load_server_module()
+        notice = {"status": "installing", "message": "PowerShell 7 is being installed."}
+        previous = os.environ.get("ENDNOTE_WORD_POWERSHELL")
+        try:
+            with tempfile.TemporaryDirectory(prefix="endnote-notice-") as directory:
+                stub = Path(directory, "slow-bridge.cmd")
+                stub.write_text(
+                    "@echo off\r\n"
+                    f"echo POWERSHELL_NOTICE={json.dumps(notice)} 1>&2\r\n"
+                    "ping -n 4 127.0.0.1 >nul\r\n",
+                    encoding="ascii",
+                )
+                os.environ["ENDNOTE_WORD_POWERSHELL"] = str(stub)
+                result = server._invoke_bridge("probe", {}, timeout=1)
+        finally:
+            if previous is None:
+                os.environ.pop("ENDNOTE_WORD_POWERSHELL", None)
+            else:
+                os.environ["ENDNOTE_WORD_POWERSHELL"] = previous
+        self.assertFalse(result["ok"])
+        self.assertIn("timed out", result["error"])
+        self.assertEqual(result["powershell_notice"], notice)
+
+    def test_powershell_7_is_found_at_its_known_location_without_path(self) -> None:
+        server = load_server_module()
+        names = ("ENDNOTE_WORD_POWERSHELL", "PATH", "LOCALAPPDATA")
+        previous = {name: os.environ.get(name) for name in names}
+        try:
+            with tempfile.TemporaryDirectory(prefix="endnote-pwsh7-") as directory:
+                alias = Path(directory, "Microsoft", "WindowsApps", "pwsh.exe")
+                alias.parent.mkdir(parents=True)
+                alias.write_bytes(b"")
+                os.environ.pop("ENDNOTE_WORD_POWERSHELL", None)
+                os.environ["PATH"] = str(Path(directory, "empty"))
+                os.environ["LOCALAPPDATA"] = directory
+                self.assertEqual(server._powershell_executable(), str(alias))
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
     def test_explicit_timeout_overrides_manifest_scaling(self) -> None:
         server = load_server_module()
         previous = os.environ.get("ENDNOTE_WORD_TIMEOUT_SECONDS")

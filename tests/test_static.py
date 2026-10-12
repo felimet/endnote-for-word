@@ -295,7 +295,11 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("PLUGIN_ROOT", claude)
         self.assertIn("${PLUGIN_ROOT}", codex)
         for text in (claude, codex):
-            self.assertIn(PACKAGE_NAME, json.loads(text)["mcpServers"].keys())
+            servers = json.loads(text)["mcpServers"]
+            self.assertIn(PACKAGE_NAME, servers.keys())
+            # powershell.exe ships with every supported Windows, so the server starts before
+            # PowerShell 7 exists; the bridge itself still runs under pwsh.exe when present.
+            self.assertEqual(servers[PACKAGE_NAME]["command"], "powershell.exe")
 
 
 class DefaultsTests(unittest.TestCase):

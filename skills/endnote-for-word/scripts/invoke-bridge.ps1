@@ -67,15 +67,25 @@ function Resolve-PowerShellHost {
                 Select-Object -First 1
         }
         catch [System.Management.Automation.CommandNotFoundException] {
-            # Expected when the candidate is not installed; try the next one.
-            continue
+            # Expected when the candidate is not installed; the fixed locations are tried next.
+            $command = $null
         }
         catch {
             Write-BridgeError "Could not probe '$candidate': $($_.Exception.Message)"
-            continue
+            $command = $null
         }
         if ($null -ne $command) {
             return $command.Source
+        }
+        if ($candidate -eq 'pwsh.exe') {
+            # A PowerShell 7 that the bridge installed may not be on this shell's PATH yet: the
+            # per-user MSIX app execution alias first, then the MSI location.
+            $knownPaths = @()
+            if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { $knownPaths += Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\pwsh.exe' }
+            if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) { $knownPaths += Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe' }
+            foreach ($knownPath in $knownPaths) {
+                if (Test-Path -LiteralPath $knownPath -PathType Leaf) { return $knownPath }
+            }
         }
     }
     throw ("Neither pwsh.exe (PowerShell 7) nor powershell.exe (Windows PowerShell 5.1) was " +

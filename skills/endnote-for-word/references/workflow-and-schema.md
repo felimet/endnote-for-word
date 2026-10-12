@@ -341,6 +341,7 @@ Action notes that the command lines alone do not convey:
 | `ENDNOTE_READY_TIMEOUT_MS` | 90000 | How long `Start-EndNoteWithLibrary` polls for an EndNote main window. |
 | `ENDNOTE_AUTOMATION_TIMEOUT_MS` | 60000 | How long the render step polls for the expected EN.CITE field count. |
 | `ENDNOTE_WORD_POWERSHELL` | unset | Overrides which PowerShell executable the MCP server spawns. |
+| `ENDNOTE_WORD_AUTO_INSTALL_PWSH` | on | Set to `0` to stop the bridge from installing PowerShell 7 in the background when it runs under Windows PowerShell 5.1 without `pwsh.exe`. |
 | `ENDNOTE_WORD_PYTHON` | first Python 3 on PATH | Python used for the mandatory DOI and library precheck. |
 | `ENDNOTE_WORD_TIMEOUT_SECONDS` | unset | Explicit MCP watchdog timeout. When unset, the base is 240 seconds and render scales to `max(240, 60 + 8 * citation_count)`, capped at 1800 seconds. |
 | `ENDNOTE_LIVE_TEST` | unset | Set to `1` to enable the live integration test. |

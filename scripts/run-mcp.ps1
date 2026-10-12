@@ -2,9 +2,10 @@
 #
 # Responsibilities:
 #   1. Find a Python 3 interpreter to host scripts/mcp_server.py.
-#   2. Resolve the PowerShell host the server will later use to run the COM bridge, and
-#      publish it as ENDNOTE_WORD_POWERSHELL so the server does not have to search again.
-#      PowerShell 7 is preferred, Windows PowerShell 5.1 is accepted.
+#   2. Check that a PowerShell host for the COM bridge exists, so a missing one fails at launch.
+#      PowerShell 7 is preferred, Windows PowerShell 5.1 is accepted. The server resolves the
+#      host again on every call, so a PowerShell 7 that the bridge installs in the background
+#      is used without a restart; only an explicit ENDNOTE_WORD_POWERSHELL pins the host.
 #
 # This file must parse under Windows PowerShell 5.1 as well as PowerShell 7, so it uses no
 # ternary, null-coalescing or null-conditional operators.
@@ -75,10 +76,10 @@ try {
         throw "The MCP server script was not found at '$server'. The plugin installation is incomplete."
     }
 
-    # The bridge host is resolved here so a missing PowerShell fails loudly at launch instead
-    # of surfacing later as an opaque tool error. An explicit override always wins.
-    $bridgeHost = $env:ENDNOTE_WORD_POWERSHELL
-    if ([string]::IsNullOrWhiteSpace($bridgeHost)) {
+    # The bridge host is checked here so a missing PowerShell fails loudly at launch instead
+    # of surfacing later as an opaque tool error. It is deliberately not published: pinning a
+    # Windows PowerShell 5.1 path here would keep the server on 5.1 after PowerShell 7 arrives.
+    if ([string]::IsNullOrWhiteSpace($env:ENDNOTE_WORD_POWERSHELL)) {
         $bridgeHost = Resolve-Executable -Candidates $PowerShellCandidates
         if ([string]::IsNullOrWhiteSpace($bridgeHost)) {
             throw ("Neither pwsh.exe (PowerShell 7) nor powershell.exe (Windows PowerShell 5.1) " +
@@ -86,7 +87,6 @@ try {
                 "PowerShell 7 from $PowerShellInstallUrl, or set $PowerShellEnvironmentVariable " +
                 "to the full path of a PowerShell executable, then start the server again.")
         }
-        Set-Item -Path "env:$PowerShellEnvironmentVariable" -Value $bridgeHost
     }
 
     $python = $env:ENDNOTE_WORD_PYTHON

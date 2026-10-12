@@ -60,7 +60,34 @@ Git Bash and CMD are terminal hosts, not runtimes. They do not replace PowerShel
 launch it. The MCP server applies the same order automatically: it honours
 `ENDNOTE_WORD_POWERSHELL` when set, otherwise it takes the first of `pwsh.exe` and
 `powershell.exe` that resolves on `PATH`, and it raises an error naming the install link
-above when neither exists.
+above when neither exists. It resolves again on every call, and it also finds PowerShell 7
+at its per-user app execution alias, so a PowerShell 7 installed while the server runs
+takes over from the next call.
+
+The shipped MCP launch command is `powershell.exe`, which every supported Windows has, so the
+server starts on a machine without PowerShell 7; the bridge still runs under `pwsh.exe`
+whenever it exists.
+
+When the bridge runs under Windows PowerShell 5.1, no `pwsh.exe` exists, and
+`ENDNOTE_WORD_POWERSHELL` is not set, it installs PowerShell 7 for the current user:
+
+1. The read-only actions (`probe`, `list-styles`, `validate`) never install anything. They
+   return a `pending` notice saying that the next call that edits a document will install it,
+   so the user hears about it first.
+2. The first other action starts `winget install --id Microsoft.PowerShell --scope user
+   --installer-type msix --no-upgrade --silent`, accepting the winget source and package
+   agreements on the user's behalf. winget runs detached, so that call returns as usual under
+   5.1, and later calls switch to PowerShell 7 once it is installed.
+3. Each state change (pending, installing, succeeded, failed, winget unavailable) is reported
+   as `powershell_notice` in the JSON result, and on stderr after a `POWERSHELL_NOTICE=`
+   marker so the MCP server can still return it when the call times out. Relay it to the user.
+
+The attempt is recorded in `%LOCALAPPDATA%\EndNoteForWordAgent\pwsh-install.json`, with
+winget's log beside it, and a finished or failed attempt is never retried on its own. Delete
+that file to allow one more attempt. To opt out, set `ENDNOTE_WORD_AUTO_INSTALL_PWSH=0` in the
+environment of the MCP server entry (or of the shell that runs the bridge). Remove PowerShell 7
+again with `winget uninstall --id Microsoft.PowerShell`. If the bridge misbehaves under the new
+host, set `ENDNOTE_WORD_POWERSHELL=powershell.exe` to return to Windows PowerShell 5.1.
 
 Console encoding on a Traditional Chinese Windows installation defaults to cp950, which
 mangles non-ASCII output. Every entry point in this project forces UTF-8 on its own output,
@@ -249,7 +276,8 @@ repository or a Codex skill directory on its own.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ENDNOTE_WORD_POWERSHELL` | unset | Absolute path to the PowerShell executable the MCP server should launch. Overrides the `pwsh.exe` then `powershell.exe` search. `run-mcp.ps1` resolves it once at launch and publishes it to the server. |
+| `ENDNOTE_WORD_POWERSHELL` | unset | Absolute path to the PowerShell executable the MCP server should launch. Overrides the `pwsh.exe` then `powershell.exe` search, which otherwise runs on every call. |
+| `ENDNOTE_WORD_AUTO_INSTALL_PWSH` | on | Under Windows PowerShell 5.1 without `pwsh.exe`, the first call that edits a document installs PowerShell 7 per user with winget (MSIX, no administrator rights) and reports it through `powershell_notice`; read-only calls only announce it. Set to `0` to opt out. A set `ENDNOTE_WORD_POWERSHELL` also disables it. |
 | `ENDNOTE_WORD_PYTHON` | unset | Absolute path to the Python interpreter `run-mcp.ps1` uses to host the MCP server. Overrides the `python.exe`, `python3.exe`, `python`, `python3` search on `PATH`. |
 | `ENDNOTE_WORD_TIMEOUT_SECONDS` | unset | Explicit MCP watchdog timeout. Without it, calls use 240 seconds; render grows to `max(240, 60 + 8 * citation_count)`, capped at 1800 seconds. On expiry the server terminates only processes the call created. |
 | `ENDNOTE_AUTOMATION_TIMEOUT_MS` | `60000` | Bridge side limit for polling until the expected citation field count is reached after `ENFormatBibliography`. |
