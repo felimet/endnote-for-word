@@ -28,6 +28,7 @@ ARCHIVE_FILE_MODE = (stat.S_IFREG | 0o644) << 16
 
 PLUGIN_NAME = "endnote-for-word"
 DEFAULT_ARCHIVE_NAME = f"{PLUGIN_NAME}-plugin.zip"
+DEFAULT_SKILL_ARCHIVE_NAME = f"{PLUGIN_NAME}.skill"
 
 
 def should_include(path: Path, root: Path) -> bool:
@@ -38,10 +39,8 @@ def should_include(path: Path, root: Path) -> bool:
 
 
 def package(root: Path, output: Path) -> str:
+    """Archive the whole plugin checkout under a single endnote-for-word/ folder."""
     root = root.resolve()
-    output = output.resolve()
-    sidecar = output.with_suffix(output.suffix + ".sha256")
-    generated_outputs = {output, sidecar}
     required = [
         root / ".codex-plugin" / "plugin.json",
         root / ".claude-plugin" / "plugin.json",
@@ -54,22 +53,35 @@ def package(root: Path, output: Path) -> str:
         root / "scripts" / "mcp_server.py",
         root / "skills" / PLUGIN_NAME / "SKILL.md",
     ]
+    return _archive_tree(root, output, required, "plugin")
+
+
+def package_skill(root: Path, output: Path) -> str:
+    """Archive only the portable skill folder, the layout a .skill upload expects."""
+    source = root.resolve() / "skills" / PLUGIN_NAME
+    return _archive_tree(source, output, [source / "SKILL.md"], "skill")
+
+
+def _archive_tree(source: Path, output: Path, required: list[Path], kind: str) -> str:
+    output = output.resolve()
+    sidecar = output.with_suffix(output.suffix + ".sha256")
+    generated_outputs = {output, sidecar}
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
-        raise FileNotFoundError("Missing required plugin files: " + ", ".join(missing))
+        raise FileNotFoundError(f"Missing required {kind} files: " + ", ".join(missing))
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for directory, directories, filenames in os.walk(root):
+        for directory, directories, filenames in os.walk(source):
             parent = Path(directory)
             directories[:] = [
-                name for name in sorted(directories) if should_include(parent / name, root)
+                name for name in sorted(directories) if should_include(parent / name, source)
             ]
             for name in sorted(filenames):
                 path = parent / name
-                if not should_include(path, root) or path.resolve() in generated_outputs:
+                if not should_include(path, source) or path.resolve() in generated_outputs:
                     continue
                 info = zipfile.ZipInfo(
-                    (Path(PLUGIN_NAME) / path.relative_to(root)).as_posix(),
+                    (Path(PLUGIN_NAME) / path.relative_to(source)).as_posix(),
                     date_time=ARCHIVE_TIMESTAMP,
                 )
                 info.create_system = 3
@@ -88,13 +100,15 @@ def package(root: Path, output: Path) -> str:
 def main() -> int:
     root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
     output = Path(sys.argv[2]) if len(sys.argv) > 2 else root / "dist" / DEFAULT_ARCHIVE_NAME
+    skill_output = output.parent / DEFAULT_SKILL_ARCHIVE_NAME
     try:
-        digest = package(root, output)
+        archives = ((output, package(root, output)), (skill_output, package_skill(root, skill_output)))
     except (FileNotFoundError, OSError, zipfile.BadZipFile) as exc:
         print(f"Packaging failed: {exc}", file=sys.stderr)
         return 1
-    print(f"Created: {output.resolve()}")
-    print(f"SHA256: {digest}")
+    for path, digest in archives:
+        print(f"Created: {path.resolve()}")
+        print(f"SHA256: {digest}")
     return 0
 
 
