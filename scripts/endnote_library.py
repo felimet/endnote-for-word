@@ -961,6 +961,10 @@ def _load_json_document(value: Any, description: str) -> Any:
             return json.load(handle)
     except json.JSONDecodeError as exc:
         raise ValueError(f"{description.capitalize()} {path} is not valid JSON: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"{description.capitalize()} {path} could not be read as UTF-8 text: {exc}"
+        ) from exc
 
 
 def _problem(

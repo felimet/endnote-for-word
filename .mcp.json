@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "endnote-for-word": {
-      "command": "pwsh.exe",
+      "command": "powershell.exe",
       "args": [
         "-NoLogo",
         "-NoProfile",

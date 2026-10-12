@@ -527,6 +527,26 @@ class EndNoteLibraryCliTests(unittest.TestCase):
         )
         self.assertTrue(result["ok"], result)
 
+    def test_precheck_rejects_a_manifest_that_is_not_utf8(self) -> None:
+        manifest = self.write_manifest(
+            "latin1-manifest.json",
+            [
+                {
+                    "id": "mueller",
+                    "marker": "{{CITE:mueller}}",
+                    "targets": [{"rec_number": 1, "author": "Müller", "year": 2023}],
+                }
+            ],
+        )
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        manifest.write_bytes(json.dumps(document, ensure_ascii=False).encode("latin-1"))
+        result = self.run_cli(
+            "precheck", "--library", str(self.library), "--manifest", str(manifest)
+        )
+        self.assertFalse(result["ok"], result)
+        self.assertIn("could not be read as UTF-8 text", result["error"])
+        self.assertIn(str(manifest), result["error"])
+
     def test_precheck_requires_a_doi_for_every_target(self) -> None:
         manifest = self.write_manifest(
             "missing-doi-manifest.json",

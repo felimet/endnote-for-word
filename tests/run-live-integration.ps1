@@ -108,7 +108,7 @@ function New-DraftDocument {
         $word.DisplayAlerts = 0
         $document = $word.Documents.Add()
         $document.Content.Text = ($paragraphs -join "`r")
-        $document.SaveAs2($Path, $WdFormatDocumentDefault)
+        $document.SaveAs2([string]$Path, $WdFormatDocumentDefault)
     }
     finally {
         if ($null -ne $document) {

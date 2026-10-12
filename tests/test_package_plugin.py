@@ -67,6 +67,34 @@ class PackagePluginTests(unittest.TestCase):
                 self.assertFalse(any(".codex-test-temp" in name for name in names))
                 self.assertIsNone(archive.testzip())
 
+    def test_skill_archive_holds_only_the_skill_folder(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="endnote-package-") as directory:
+            workspace = Path(directory)
+            root = workspace / "checkout"
+            build_checkout(root, 1_700_000_000)
+            reference = root / "skills" / "endnote-for-word" / "references" / "notes.md"
+            reference.parent.mkdir(parents=True)
+            reference.write_text("notes", encoding="utf-8")
+
+            output = workspace / "endnote-for-word.skill"
+            digest = package_plugin.package_skill(root, output)
+
+            self.assertEqual(digest, package_plugin.package_skill(root, output))
+            sidecar = output.with_name(output.name + ".sha256")
+            self.assertEqual(sidecar.read_text(encoding="ascii"), f"{digest}  {output.name}\n")
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(
+                    sorted(archive.namelist()),
+                    ["endnote-for-word/SKILL.md", "endnote-for-word/references/notes.md"],
+                )
+
+    def test_skill_archive_requires_skill_md(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="endnote-package-") as directory:
+            root = Path(directory) / "checkout"
+            (root / "skills" / "endnote-for-word").mkdir(parents=True)
+            with self.assertRaises(FileNotFoundError):
+                package_plugin.package_skill(root, Path(directory) / "out.skill")
+
 
 if __name__ == "__main__":
     unittest.main()

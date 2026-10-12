@@ -93,6 +93,39 @@ $script:PackagedDefaultsPath = Join-Path $script:PluginRoot 'config\defaults.jso
 $script:UserConfigDirectory = Join-Path $env:APPDATA 'EndNoteForWordAgent'
 $script:UserDefaultsPath = Join-Path $script:UserConfigDirectory 'defaults.json'
 
+# PowerShell 7 auto-install, see Update-PowerShell7AutoInstall. Its state is machine-local, so it
+# lives under %LOCALAPPDATA% rather than beside the roaming defaults. Every path is built only
+# when its root variable exists, so a missing variable disables the feature instead of the bridge.
+$script:Pwsh7AutoInstallEnvironmentVariable = 'ENDNOTE_WORD_AUTO_INSTALL_PWSH'
+$script:PowerShellHostEnvironmentVariable = 'ENDNOTE_WORD_POWERSHELL'
+$script:Pwsh7WingetPackageId = 'Microsoft.PowerShell'
+$script:Pwsh7ExecutableName = 'pwsh.exe'
+$script:WingetExecutableName = 'winget.exe'
+$script:Pwsh7LogTailLines = 5
+$script:Pwsh7ClaimGraceMinutes = 30
+$script:FalseSettingValues = @('0', 'false', 'no', 'off')
+# Actions the MCP server advertises as read-only never start an install; they only announce it.
+$script:ReadOnlyActions = @('probe', 'list-styles', 'validate')
+$script:PowerShellNoticeMarker = 'POWERSHELL_NOTICE='
+$script:PowerShellInstallUrl = 'https://learn.microsoft.com/powershell/scripting/install/install-powershell-on-windows'
+$script:Pwsh7StateDirectory = $null
+$script:Pwsh7InstallStatePath = $null
+$script:Pwsh7InstallLogPath = $null
+$script:Pwsh7KnownPaths = @()
+$script:WingetKnownPaths = @()
+if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    $script:Pwsh7StateDirectory = Join-Path $env:LOCALAPPDATA 'EndNoteForWordAgent'
+    $script:Pwsh7InstallStatePath = Join-Path $script:Pwsh7StateDirectory 'pwsh-install.json'
+    $script:Pwsh7InstallLogPath = Join-Path $script:Pwsh7StateDirectory 'pwsh-install.log'
+    # The winget package installs the per-user MSIX, reachable through its app execution alias.
+    $script:Pwsh7KnownPaths += Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\pwsh.exe'
+    $script:WingetKnownPaths += Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\winget.exe'
+}
+if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+    # MSI location of older or manually installed PowerShell 7 releases.
+    $script:Pwsh7KnownPaths += Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+}
+
 # CWYW macro names. Every macro whose name ends in "Dlg" opens a modal dialog that blocks
 # Application.Run forever, so Invoke-CwywMacro refuses to call one. ENRemoveFieldCodes is
 # deliberately absent: it was measured to raise a modal confirmation dialog and never return
@@ -227,6 +260,7 @@ $script:StaleArtifactsRemoved = New-Object 'System.Collections.Generic.List[stri
 $script:EndNoteInstallationCache = $null
 $script:CwywTemplateCache = $null
 $script:InstalledStylesCache = $null
+$script:PowerShellNotice = $null
 
 # ---------------------------------------------------------------------------------------------
 # Generic helpers.
@@ -234,6 +268,9 @@ $script:InstalledStylesCache = $null
 
 function Write-JsonResult {
     param([Parameter(Mandatory)]$Value)
+    if ($null -ne $script:PowerShellNotice -and $Value -is [System.Collections.IDictionary]) {
+        $Value['powershell_notice'] = $script:PowerShellNotice
+    }
     $Value | ConvertTo-Json -Depth 20 -Compress
 }
 
@@ -246,7 +283,11 @@ function Resolve-ExistingFile {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "$Label does not exist: $Path"
     }
-    return (Resolve-Path -LiteralPath $Path).Path
+    # Resolve-Path reports a UNC file as Microsoft.PowerShell.Core\FileSystem::\\server\...,
+    # which Python, Word and .NET cannot open. Convert-Path yields the plain file system path,
+    # and GetFullPath normalizes it the way Resolve-OutputFile does, 8.3 short names included,
+    # so the input and output comparisons that guard against in-place writes stay sound.
+    return [IO.Path]::GetFullPath((Convert-Path -LiteralPath $Path))
 }
 
 function Resolve-OutputFile {
@@ -291,6 +332,44 @@ function Get-OptionalProperty {
     return $property.Value
 }
 
+function Read-StrictUtf8Text {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Label
+    )
+    # Text inputs are UTF-8 with an optional BOM, the contract endnote_library.py enforces with
+    # utf-8-sig. Get-Content without -Encoding decodes with the ANSI code page on Windows
+    # PowerShell 5.1, and File.ReadAllText switches to a lenient decoder whenever it sees a
+    # BOM. This reader never detects BOMs: the UTF-8 BOM is stripped as the preamble of the
+    # strict encoding, so UTF-16 files and invalid bytes, BOM or not, fail here instead of
+    # passing with corrupted names.
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($true, $true)
+    # Convert-Path resolves relative and provider-qualified paths against the PowerShell
+    # location, which .NET does not see. ReadWrite sharing matches Get-Content, so a file
+    # another program holds open for writing stays readable.
+    $stream = $null
+    try {
+        $stream = New-Object System.IO.FileStream((Convert-Path -LiteralPath $Path), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $reader = New-Object System.IO.StreamReader($stream, $strictUtf8, $false)
+        return $reader.ReadToEnd()
+    }
+    catch { throw "$Label could not be read as UTF-8 text ($Path): $($_.Exception.Message)" }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function Read-Utf8JsonFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $text = Read-StrictUtf8Text -Path $Path -Label $Label
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    try { return $text | ConvertFrom-Json }
+    catch { throw "$Label is not valid JSON ($Path): $($_.Exception.Message)" }
+}
+
 function Get-AgentDefaults {
     $path = $script:PackagedDefaultsPath
     if (Test-Path -LiteralPath $script:UserDefaultsPath -PathType Leaf) {
@@ -299,8 +378,9 @@ function Get-AgentDefaults {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Agent defaults are missing: $path"
     }
-    try { return Get-Content -Raw -LiteralPath $path | ConvertFrom-Json }
-    catch { throw "Agent defaults are not valid JSON ($path): $($_.Exception.Message)" }
+    $defaults = Read-Utf8JsonFile -Path $path -Label 'The agent defaults file'
+    if ($null -eq $defaults) { throw "The agent defaults file is empty: $path" }
+    return $defaults
 }
 
 function Get-DefaultOutputStyle {
@@ -319,7 +399,7 @@ function Resolve-PythonExecutable {
         if (-not (Test-Path -LiteralPath $configured -PathType Leaf)) {
             throw "$($script:PythonEnvironmentVariable) does not point to a Python executable: $configured"
         }
-        return (Resolve-Path -LiteralPath $configured).Path
+        return (Convert-Path -LiteralPath $configured)
     }
 
     foreach ($candidate in $script:PythonCandidates) {
@@ -363,8 +443,11 @@ function Invoke-HiddenProcess {
     $process.StartInfo = $startInfo
     try {
         if (-not $process.Start()) { throw "The child process did not start: $Executable" }
+        # Drain stderr concurrently. Reading the pipes one after the other deadlocks as soon as
+        # the child fills the stderr pipe buffer while this side still blocks on stdout.
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
         $process.WaitForExit()
         return [ordered]@{ exit_code = $process.ExitCode; stdout = $stdout; stderr = $stderr }
     }
@@ -402,6 +485,8 @@ function Invoke-ManifestPrecheck {
     }
     $details = New-Object System.Collections.Generic.List[string]
     foreach ($problem in @(Get-OptionalProperty -Object $result -Name 'problems')) {
+        # A failure without a problems array yields @($null), which would add an empty ': '.
+        if ($null -eq $problem) { continue }
         $details.Add(([string](Get-OptionalProperty -Object $problem -Name 'problem')) + ': ' + ([string](Get-OptionalProperty -Object $problem -Name 'message')))
     }
     $errorText = [string](Get-OptionalProperty -Object $result -Name 'error')
@@ -479,13 +564,13 @@ function Resolve-EndNoteDirectory {
     try {
         if (Test-Path -LiteralPath $candidate -PathType Container) {
             if (Test-Path -LiteralPath (Join-Path $candidate $script:EndNoteExecutableName) -PathType Leaf) {
-                return (Resolve-Path -LiteralPath $candidate).Path
+                return (Convert-Path -LiteralPath $candidate)
             }
             return $null
         }
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
             if ([IO.Path]::GetFileName($candidate) -ieq $script:EndNoteExecutableName) {
-                return (Resolve-Path -LiteralPath (Split-Path -Parent $candidate)).Path
+                return (Convert-Path -LiteralPath (Split-Path -Parent $candidate))
             }
         }
     }
@@ -632,9 +717,10 @@ function Get-CwywTemplatePath {
 
 function Get-LibraryDataDirectory {
     param([Parameter(Mandatory)][string]$LibraryFile)
-    $parent = Split-Path -Parent $LibraryFile
+    # String path APIs: Windows PowerShell 5.1's Join-Path rejects a plain \\?\ parent.
+    $parent = [IO.Path]::GetDirectoryName($LibraryFile)
     $stem = [IO.Path]::GetFileNameWithoutExtension($LibraryFile)
-    return (Join-Path $parent ($stem + $script:LibraryDataDirectorySuffix))
+    return [IO.Path]::Combine($parent, $stem + $script:LibraryDataDirectorySuffix)
 }
 
 function Assert-EndNoteLibrary {
@@ -704,6 +790,190 @@ function Resolve-StyleName {
     $suggestion = 'none'
     if ($near.Count -gt 0) { $suggestion = ($near -join ', ') }
     throw "Output style '$Name' is not installed. An unknown style makes EndNote open a modal dialog and hang the run, so this is a hard failure. Nearest installed matches: $suggestion. Use the list-styles action for the full list."
+}
+
+# ---------------------------------------------------------------------------------------------
+# PowerShell 7 auto-install. Windows PowerShell 5.1 stays supported, but PowerShell 7 is the
+# preferred host. Under 5.1 without pwsh.exe, read-only actions only announce the install; the
+# first action that is not read-only starts one per-user winget install, detached so the
+# current call is not held up, and records it under %LOCALAPPDATA%. Each later state change is
+# reported once through powershell_notice in the JSON result and as a stderr marker that the
+# MCP server can still recover when the call itself times out.
+# ---------------------------------------------------------------------------------------------
+
+function Find-PowerShell7 {
+    $command = Get-Command -Name $script:Pwsh7ExecutableName -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -ne $command) { return [string]$command.Source }
+    foreach ($candidate in @($script:Pwsh7KnownPaths)) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return [string]$candidate }
+    }
+    return $null
+}
+
+function Find-Winget {
+    $command = Get-Command -Name $script:WingetExecutableName -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -ne $command) { return [string]$command.Source }
+    foreach ($candidate in @($script:WingetKnownPaths)) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return [string]$candidate }
+    }
+    return $null
+}
+
+function Read-Pwsh7InstallState {
+    if (-not (Test-Path -LiteralPath $script:Pwsh7InstallStatePath -PathType Leaf)) { return $null }
+    try {
+        $state = Read-Utf8JsonFile -Path $script:Pwsh7InstallStatePath -Label 'The PowerShell 7 install state file'
+        if (-not [string]::IsNullOrWhiteSpace([string](Get-OptionalProperty -Object $state -Name 'state'))) { return $state }
+    }
+    catch { Write-Log -Level WARN -Message $_.Exception.Message }
+    # An unreadable state would otherwise block every later decision without telling anyone.
+    $aside = $script:Pwsh7InstallStatePath + '.bad'
+    Move-Item -LiteralPath $script:Pwsh7InstallStatePath -Destination $aside -Force
+    Write-Log -Level WARN -Message "Set an unreadable PowerShell 7 install state aside as $aside."
+    return $null
+}
+
+function Write-Pwsh7InstallState {
+    param([Parameter(Mandatory)]$State, [switch]$CreateNew)
+    New-Item -ItemType Directory -Path $script:Pwsh7StateDirectory -Force | Out-Null
+    # CreateNew makes the first claim atomic, so two concurrent bridge calls cannot both start
+    # an install; the loser's IOException is logged by the caller's catch.
+    $mode = [IO.FileMode]::Create
+    if ($CreateNew) { $mode = [IO.FileMode]::CreateNew }
+    $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes(($State | ConvertTo-Json -Depth 5))
+    $stream = New-Object System.IO.FileStream($script:Pwsh7InstallStatePath, $mode, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length) }
+    finally { $stream.Dispose() }
+}
+
+function New-Pwsh7Notice {
+    param([Parameter(Mandatory)][string]$Status, [Parameter(Mandatory)][string]$Message)
+    return [ordered]@{
+        status           = $Status
+        message          = $Message
+        relay_to_user    = $true
+        package          = $script:Pwsh7WingetPackageId
+        state_path       = $script:Pwsh7InstallStatePath
+        log_path         = $script:Pwsh7InstallLogPath
+        opt_out_variable = $script:Pwsh7AutoInstallEnvironmentVariable
+        uninstall        = "winget uninstall --id $($script:Pwsh7WingetPackageId)"
+    }
+}
+
+function Get-Pwsh7InstallLogTail {
+    if (-not (Test-Path -LiteralPath $script:Pwsh7InstallLogPath -PathType Leaf)) { return '' }
+    $lines = New-Object System.Collections.Generic.List[string]
+    try {
+        foreach ($line in ((Read-StrictUtf8Text -Path $script:Pwsh7InstallLogPath -Label 'The PowerShell 7 install log') -split "`r?`n")) {
+            if (-not [string]::IsNullOrWhiteSpace($line)) { $lines.Add($line.Trim()) }
+        }
+    }
+    catch { Write-Log -Level WARN -Message $_.Exception.Message }
+    if ($lines.Count -eq 0) { return '' }
+    $first = [Math]::Max(0, $lines.Count - $script:Pwsh7LogTailLines)
+    return ($lines.GetRange($first, $lines.Count - $first) -join ' | ')
+}
+
+function Complete-Pwsh7InstallState {
+    param([AllowNull()]$State, [AllowNull()][string]$PwshPath)
+    $now = [DateTime]::UtcNow.ToString('o')
+    $startedAt = [string](Get-OptionalProperty -Object $State -Name 'started_at')
+    if (-not [string]::IsNullOrWhiteSpace($PwshPath)) {
+        Write-Pwsh7InstallState -State ([ordered]@{ schema = 1; state = 'succeeded'; started_at = $startedAt; finished_at = $now; pwsh_path = $PwshPath })
+        return New-Pwsh7Notice -Status 'succeeded' -Message ("PowerShell 7 was installed automatically at $PwshPath. From the next call on, the MCP server " +
+            "and invoke-bridge.ps1 run the bridge under PowerShell 7. If calls fail after the switch, set " +
+            "$($script:PowerShellHostEnvironmentVariable)=powershell.exe to return to Windows PowerShell 5.1.")
+    }
+    $tail = Get-Pwsh7InstallLogTail
+    Write-Pwsh7InstallState -State ([ordered]@{ schema = 1; state = 'failed'; started_at = $startedAt; finished_at = $now; log_tail = $tail })
+    return New-Pwsh7Notice -Status 'failed' -Message ("The automatic PowerShell 7 install did not complete, so the bridge keeps using Windows PowerShell 5.1, " +
+        "which is supported. Log: $tail. Install PowerShell 7 from $($script:PowerShellInstallUrl), or with " +
+        "'winget install --id $($script:Pwsh7WingetPackageId) --source winget' where winget is allowed, or delete " +
+        "$($script:Pwsh7InstallStatePath) to let the bridge try once more.")
+}
+
+function Start-Pwsh7Install {
+    param([Parameter(Mandatory)][string]$Winget, [AllowNull()]$PreviousState)
+    $now = [DateTime]::UtcNow.ToString('o')
+    $argumentText = (@('install', '--id', $script:Pwsh7WingetPackageId, '--exact', '--source', 'winget', '--scope', 'user',
+            '--installer-type', 'msix', '--no-upgrade', '--silent', '--disable-interactivity',
+            '--accept-package-agreements', '--accept-source-agreements', '--log') -join ' ') +
+        ' ' + (ConvertTo-ProcessArgument -Value $script:Pwsh7InstallLogPath)
+    $claim = [ordered]@{ schema = 1; state = 'installing'; started_at = $now; command = ($Winget + ' ' + $argumentText) }
+    if ($null -eq $PreviousState) { Write-Pwsh7InstallState -CreateNew -State $claim }
+    else { Write-Pwsh7InstallState -State $claim }
+    try {
+        # No -Redirect* and no -NoNewWindow: Start-Process then uses ShellExecute, which hands
+        # winget none of this process's handles. With redirection, winget would inherit the
+        # bridge's stdout and stderr pipes, and the caller would wait for the whole install.
+        $process = Start-Process -FilePath $Winget -ArgumentList $argumentText -WindowStyle Hidden -PassThru
+    }
+    catch {
+        Write-Log -Level WARN -Message "Could not start winget to install PowerShell 7: $($_.Exception.Message)"
+        return Complete-Pwsh7InstallState -State ([pscustomobject]$claim) -PwshPath $null
+    }
+    $claim['pid'] = $process.Id
+    try { Write-Pwsh7InstallState -State $claim }
+    catch { Write-Log -Level WARN -Message "Could not record the PowerShell 7 install process id: $($_.Exception.Message)" }
+    Write-Log -Level INFO -Message "Started a detached PowerShell 7 install: $($claim.command)"
+    return New-Pwsh7Notice -Status 'installing' -Message ("PowerShell 7 was not found, so the bridge started installing it in the background with " +
+        "winget (package $($script:Pwsh7WingetPackageId), per-user MSIX, no administrator rights). The winget source and " +
+        "package agreements were accepted on the user's behalf. This call ran under Windows PowerShell 5.1, which is " +
+        "supported; later calls switch to PowerShell 7 once the install finishes.")
+}
+
+function Update-PowerShell7AutoInstall {
+    param([Parameter(Mandatory)][string]$Action, [string]$Edition = $PSVersionTable.PSEdition)
+    if ([string]::IsNullOrWhiteSpace($script:Pwsh7InstallStatePath)) { return $null }
+    $pwsh = Find-PowerShell7
+    $state = Read-Pwsh7InstallState
+    $status = [string](Get-OptionalProperty -Object $state -Name 'state')
+
+    if ($status -eq 'installing') {
+        if (-not [string]::IsNullOrWhiteSpace($pwsh)) { return Complete-Pwsh7InstallState -State $state -PwshPath $pwsh }
+        $processId = Get-OptionalProperty -Object $state -Name 'pid'
+        if ($null -eq $processId) {
+            # A claim without a process id is either being written right now or lost its second
+            # write; give it a grace period before calling the attempt failed.
+            $startedAt = [DateTime]::MinValue
+            [void][DateTime]::TryParse([string](Get-OptionalProperty -Object $state -Name 'started_at'), [ref]$startedAt)
+            if ([DateTime]::UtcNow - $startedAt.ToUniversalTime() -lt [TimeSpan]::FromMinutes($script:Pwsh7ClaimGraceMinutes)) { return $null }
+            return Complete-Pwsh7InstallState -State $state -PwshPath $null
+        }
+        $process = Get-Process -Id ([int]$processId) -ErrorAction SilentlyContinue
+        if ($null -ne $process -and $process.ProcessName -ieq [IO.Path]::GetFileNameWithoutExtension($script:WingetExecutableName)) { return $null }
+        return Complete-Pwsh7InstallState -State $state -PwshPath $null
+    }
+    # One attempt per state file: a finished or failed attempt is never retried on its own, and
+    # a PowerShell 7 the user uninstalled is not reinstalled behind their back.
+    if ($status -eq 'succeeded' -or $status -eq 'failed') { return $null }
+
+    if ($Edition -ne 'Desktop' -or -not [string]::IsNullOrWhiteSpace($pwsh)) { return $null }
+    # A host pinned on purpose, or an explicit opt-out, means no install.
+    if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($script:PowerShellHostEnvironmentVariable))) { return $null }
+    $optOut = [string][Environment]::GetEnvironmentVariable($script:Pwsh7AutoInstallEnvironmentVariable)
+    if ($script:FalseSettingValues -contains $optOut.Trim().ToLowerInvariant()) { return $null }
+
+    $readOnly = $script:ReadOnlyActions -contains $Action
+    $optOutText = "Set $($script:Pwsh7AutoInstallEnvironmentVariable)=0 in the MCP server environment to opt out."
+    $winget = Find-Winget
+    if ([string]::IsNullOrWhiteSpace($winget)) {
+        # 'unavailable' is only a record that the user was told; it is checked again on every call.
+        if ($status -eq 'unavailable') { return $null }
+        if (-not $readOnly) {
+            Write-Pwsh7InstallState -CreateNew -State ([ordered]@{ schema = 1; state = 'unavailable'; started_at = [DateTime]::UtcNow.ToString('o') })
+        }
+        return New-Pwsh7Notice -Status 'unavailable' -Message ("PowerShell 7 is not installed and winget is not available, so it cannot be installed " +
+            "automatically. The bridge uses Windows PowerShell 5.1, which is supported. Install PowerShell 7 from $($script:PowerShellInstallUrl).")
+    }
+    if ($readOnly) {
+        return New-Pwsh7Notice -Status 'pending' -Message ("PowerShell 7 is not installed. The next call other than $($script:ReadOnlyActions -join ', ') will install it in the " +
+            "background with winget (package $($script:Pwsh7WingetPackageId), per-user MSIX, no administrator rights), accepting " +
+            "the winget source and package agreements on the user's behalf. $optOutText")
+    }
+    return Start-Pwsh7Install -Winget $winget -PreviousState $state
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -832,7 +1102,12 @@ function Save-DocumentAtomically {
     $script:TemporarySaveDestination = $Destination
     try {
         Write-Log -Level INFO -Message "Saving temporary DOCX: $temporary"
-        $script:Document.SaveAs2($temporary, $script:WdFormatXmlDocument)
+        # Keep the [string] cast. Under Windows PowerShell 5.1, SaveAs2 given uncast Join-Path
+        # output never returned on any measured run (part of one core busy, no file I/O, with or
+        # without EndNote fields); the cast or a concatenated string returned at once, and
+        # PowerShell 7 returned with either form. The cause inside Word is unknown: the value is
+        # wrapped the same way on both hosts and reaches a stand-in COM server as the same BSTR.
+        $script:Document.SaveAs2([string]$temporary, $script:WdFormatXmlDocument)
         Write-Log -Level INFO -Message 'Word SaveAs2 returned.'
         Stop-Word
         Move-Item -LiteralPath $temporary -Destination $Destination -Force
@@ -1199,9 +1474,7 @@ function Get-EndNoteLibraries {
 function Read-Manifest {
     param([Parameter(Mandatory)][string]$Path)
     $resolved = Resolve-ExistingFile -Path $Path -Label 'ManifestPath'
-    $manifest = $null
-    try { $manifest = Get-Content -Raw -LiteralPath $resolved | ConvertFrom-Json }
-    catch { throw "ManifestPath is not valid JSON ($resolved): $($_.Exception.Message)" }
+    $manifest = Read-Utf8JsonFile -Path $resolved -Label 'ManifestPath'
     if ($null -eq $manifest) { throw "ManifestPath is empty: $resolved" }
     $schemaVersion = Get-OptionalProperty -Object $manifest -Name 'schema_version'
     if ($schemaVersion -ne $script:ManifestSchemaVersion) {
@@ -1959,9 +2232,8 @@ function Invoke-ConfigureDefaults {
     if (-not (Test-Path -LiteralPath $script:PackagedDefaultsPath -PathType Leaf)) {
         throw "Packaged defaults are missing: $script:PackagedDefaultsPath"
     }
-    $defaults = $null
-    try { $defaults = Get-Content -Raw -LiteralPath $script:PackagedDefaultsPath | ConvertFrom-Json }
-    catch { throw "Packaged defaults are not valid JSON ($script:PackagedDefaultsPath): $($_.Exception.Message)" }
+    $defaults = Read-Utf8JsonFile -Path $script:PackagedDefaultsPath -Label 'The packaged defaults file'
+    if ($null -eq $defaults) { throw "The packaged defaults file is empty: $script:PackagedDefaultsPath" }
 
     New-Item -ItemType Directory -Path $script:UserConfigDirectory -Force | Out-Null
     Copy-Item -LiteralPath $script:PackagedDefaultsPath -Destination $script:UserDefaultsPath -Force
@@ -2263,8 +2535,7 @@ function Invoke-ImportRis {
     if ([IO.Path]::GetExtension($resolvedRis) -ine $script:RisExtension) {
         throw "RisPath must use the $($script:RisExtension) extension: $resolvedRis"
     }
-    $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
-    $risText = [IO.File]::ReadAllText($resolvedRis, $strictUtf8)
+    $risText = Read-StrictUtf8Text -Path $resolvedRis -Label 'RisPath'
     $risRecordCount = [regex]::Matches($risText, '(?m)^TY  - ').Count
     if ($risRecordCount -lt 1) {
         throw 'RisPath contains no RIS records (no line beginning with TY  - ).'
@@ -2326,6 +2597,16 @@ function Invoke-ImportRis {
 # ---------------------------------------------------------------------------------------------
 
 try {
+    # The PowerShell 7 check must never fail or delay the requested action.
+    try {
+        $script:PowerShellNotice = Update-PowerShell7AutoInstall -Action $Action
+        if ($null -ne $script:PowerShellNotice) {
+            # The JSON result carries the notice; this marker lets the MCP server recover it
+            # when the action itself times out and no result line is ever written.
+            [Console]::Error.WriteLine($script:PowerShellNoticeMarker + ($script:PowerShellNotice | ConvertTo-Json -Depth 5 -Compress))
+        }
+    }
+    catch { Write-Log -Level WARN -Message "The PowerShell 7 auto-install check failed: $($_.Exception.Message)" }
     switch ($Action) {
         'probe' { Invoke-Probe }
         'list-styles' { Invoke-ListStyles }

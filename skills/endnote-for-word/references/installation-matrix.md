@@ -60,7 +60,35 @@ Git Bash and CMD are terminal hosts, not runtimes. They do not replace PowerShel
 launch it. The MCP server applies the same order automatically: it honours
 `ENDNOTE_WORD_POWERSHELL` when set, otherwise it takes the first of `pwsh.exe` and
 `powershell.exe` that resolves on `PATH`, and it raises an error naming the install link
-above when neither exists.
+above when neither exists. It resolves again on every call, and it also finds PowerShell 7
+at its per-user app execution alias, so a PowerShell 7 installed while the server runs
+takes over from the next call.
+
+The shipped MCP launch command is `powershell.exe`, which every supported Windows has, so the
+server starts on a machine without PowerShell 7; the bridge still runs under `pwsh.exe`
+whenever it exists.
+
+When the bridge runs under Windows PowerShell 5.1, no `pwsh.exe` exists, and
+`ENDNOTE_WORD_POWERSHELL` is not set, it installs PowerShell 7 for the current user:
+
+1. The read-only actions (`probe`, `list-styles`, `validate`) never install anything. They
+   return a `pending` notice, on every such call, saying that the next call that is not
+   read-only will install it. A session that starts with `probe`, as the workflow does,
+   therefore announces it before anything changes.
+2. The first other action starts `winget install --id Microsoft.PowerShell --scope user
+   --installer-type msix --no-upgrade --silent`, accepting the winget source and package
+   agreements on the user's behalf. winget runs detached, so that call returns as usual under
+   5.1, and later calls switch to PowerShell 7 once it is installed.
+3. Each state change (pending, installing, succeeded, failed, winget unavailable) is reported
+   as `powershell_notice` in the JSON result, and on stderr after a `POWERSHELL_NOTICE=`
+   marker so the MCP server can still return it when the call times out. Relay it to the user.
+
+The attempt is recorded in `%LOCALAPPDATA%\EndNoteForWordAgent\pwsh-install.json`, with
+winget's log beside it, and a finished or failed attempt is never retried on its own. Delete
+that file to allow one more attempt. To opt out, set `ENDNOTE_WORD_AUTO_INSTALL_PWSH=0` in the
+environment of the MCP server entry (or of the shell that runs the bridge). Remove PowerShell 7
+again with `winget uninstall --id Microsoft.PowerShell`. If the bridge misbehaves under the new
+host, set `ENDNOTE_WORD_POWERSHELL=powershell.exe` to return to Windows PowerShell 5.1.
 
 Console encoding on a Traditional Chinese Windows installation defaults to cp950, which
 mangles non-ASCII output. Every entry point in this project forces UTF-8 on its own output,
@@ -144,14 +172,8 @@ Copy the skill directory:
 Register and inspect the MCP server:
 
 ```console
-claude mcp add --scope user endnote-for-word -- pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
-claude mcp get endnote-for-word
-```
-
-On a machine with no PowerShell 7, use the 5.1 executable in the same position:
-
-```console
 claude mcp add --scope user endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
+claude mcp get endnote-for-word
 ```
 
 The repository also ships `.claude-plugin/plugin.json` and `.mcp.json` for a managed plugin
@@ -164,22 +186,16 @@ installing or changing a skill.
 Claude Desktop needs both layers, the skill and the MCP server.
 
 1. Upload the skill through **Customize > Skills**. That uploader takes a ZIP of the skill
-   folder itself, meaning the folder that contains `SKILL.md`, so build it from
-   `skills\endnote-for-word`:
+   folder itself, meaning the folder that contains `SKILL.md`. Build it with:
 
-   ```powershell
-   New-Item -ItemType Directory -Force -Path "<REPO_ROOT>\dist" | Out-Null
-   Compress-Archive -Path "<REPO_ROOT>\skills\endnote-for-word" -DestinationPath "<REPO_ROOT>\dist\endnote-for-word-skill.zip" -Force
+   ```console
+   python scripts\package_plugin.py
    ```
 
-   `Compress-Archive` fails when the destination directory does not exist yet, which is why
-   the first line is there.
-
-   See <https://support.claude.com/en/articles/12512180-use-skills-in-claude>.
-   `python scripts\package_plugin.py` is a different artefact: it archives the whole
-   repository to `dist\endnote-for-word-plugin.zip`, writes a `.sha256` sidecar, and prints
-   the path and the digest. That bundle is for plugin aware hosts, not for the Skills
-   uploader.
+   and upload `dist\endnote-for-word.skill`, which holds only `skills\endnote-for-word`. The
+   same command writes `dist\endnote-for-word-plugin.zip`, the whole repository for plugin
+   aware hosts, and a `.sha256` sidecar for each archive. See
+   <https://support.claude.com/en/articles/12512180-use-skills-in-claude>.
 2. Merge the server entry below into `%APPDATA%\Claude\claude_desktop_config.json`. Merge,
    do not overwrite: that file usually already contains other servers.
 
@@ -187,7 +203,7 @@ Claude Desktop needs both layers, the skill and the MCP server.
 {
   "mcpServers": {
     "endnote-for-word": {
-      "command": "pwsh.exe",
+      "command": "powershell.exe",
       "args": [
         "-NoLogo",
         "-NoProfile",
@@ -202,9 +218,8 @@ Claude Desktop needs both layers, the skill and the MCP server.
 }
 ```
 
-Replace `pwsh.exe` with `powershell.exe` if PowerShell 7 is not installed. Restart Claude
-Desktop, call `probe_endnote_word`, and run a fixture render before touching a real
-manuscript.
+The bridge still runs under PowerShell 7 whenever it is installed. Restart Claude Desktop,
+call `probe_endnote_word`, and run a fixture render before touching a real manuscript.
 
 ## Codex
 
@@ -218,7 +233,7 @@ Copy the skill directory to either supported skill root:
 Register and inspect the MCP server:
 
 ```console
-codex mcp add endnote-for-word -- pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
+codex mcp add endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 codex mcp get endnote-for-word
 ```
 
@@ -249,7 +264,8 @@ repository or a Codex skill directory on its own.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ENDNOTE_WORD_POWERSHELL` | unset | Absolute path to the PowerShell executable the MCP server should launch. Overrides the `pwsh.exe` then `powershell.exe` search. `run-mcp.ps1` resolves it once at launch and publishes it to the server. |
+| `ENDNOTE_WORD_POWERSHELL` | unset | Absolute path to the PowerShell executable the MCP server should launch. Overrides the `pwsh.exe` then `powershell.exe` search, which otherwise runs on every call. |
+| `ENDNOTE_WORD_AUTO_INSTALL_PWSH` | on | Under Windows PowerShell 5.1 without `pwsh.exe`, the first call other than `probe`, `list-styles` or `validate` installs PowerShell 7 per user with winget (MSIX, no administrator rights) and reports it through `powershell_notice`; read-only calls only announce it. Set to `0` to opt out. A set `ENDNOTE_WORD_POWERSHELL` also disables it. |
 | `ENDNOTE_WORD_PYTHON` | unset | Absolute path to the Python interpreter `run-mcp.ps1` uses to host the MCP server. Overrides the `python.exe`, `python3.exe`, `python`, `python3` search on `PATH`. |
 | `ENDNOTE_WORD_TIMEOUT_SECONDS` | unset | Explicit MCP watchdog timeout. Without it, calls use 240 seconds; render grows to `max(240, 60 + 8 * citation_count)`, capped at 1800 seconds. On expiry the server terminates only processes the call created. |
 | `ENDNOTE_AUTOMATION_TIMEOUT_MS` | `60000` | Bridge side limit for polling until the expected citation field count is reached after `ENFormatBibliography`. |

@@ -4,7 +4,7 @@ description: "Find DOI-verified research papers with the Agent's available schol
 license: MIT
 metadata:
   author: Jia-Ming Zhou (Felimet)
-  version: 1.2.0
+  version: 1.3.0
 ---
 
 # EndNote for Word
@@ -166,6 +166,7 @@ Treat any of these as a failed deliverable. `validate` returns `ok: false` and e
 - If a needed reference is genuinely absent from the library, do not invent a rec-number. Use `export_reference_import_file` when RIS must be generated, call `import_reference_file` on the exact library, then search again. A zero `imported_count` returns `ok: false`; search by DOI before retrying because the records may already exist, otherwise repair the RIS and retry once. Read [library-import.md](references/library-import.md).
 - Word COM is single-user desktop automation. It needs an unlocked interactive desktop session and one job at a time in a given Windows profile.
 - Console output on Windows may default to a legacy code page. Every entry point forces UTF-8; if output is mojibake, the caller bypassed an entry point.
+- If a result carries `powershell_notice`, tell the user its `message`. Under Windows PowerShell 5.1 without `pwsh.exe`, read-only calls announce a PowerShell 7 install (`pending`) and the first call other than `probe`, `list-styles` or `validate` starts it with winget; see [installation-matrix.md](references/installation-matrix.md).
 - Read [cwyw-entrypoints.md](references/cwyw-entrypoints.md) before attempting any CWYW call the bridge does not already wrap.
 
 ## Reference routing

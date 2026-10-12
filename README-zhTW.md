@@ -39,7 +39,7 @@ Bridge 為單一 PowerShell 腳本，同時相容 PowerShell 7 與 Windows Power
 | 目前終端機 | 執行方式 |
 |---|---|
 | PowerShell 7+ | 直接以 `pwsh.exe` 執行命令。 |
-| Windows PowerShell 5.1 | 支援。可用 `powershell.exe` 執行；若已安裝 `pwsh.exe` 則優先使用。 |
+| Windows PowerShell 5.1 | 支援。可用 `powershell.exe` 執行；若已安裝 `pwsh.exe` 則優先使用。若沒有 `pwsh.exe`，第一個非唯讀呼叫（`probe`、`list-styles`、`validate` 以外）會以 winget 為目前使用者安裝 PowerShell 7（不需系統管理員權限），並在結果中告知；在此之前的唯讀呼叫會先預告；設定 `ENDNOTE_WORD_AUTO_INSTALL_PWSH=0` 可停用。下方的 MCP 註冊命令以 `powershell.exe` 啟動 server，因此尚未安裝 PowerShell 7 時也能啟動。 |
 | Windows 上的 Bash，包括 Git Bash | 呼叫 Windows `pwsh.exe`，找不到時退回 `powershell.exe`。 |
 | CMD | 以相同參數呼叫 `pwsh.exe`，找不到時退回 `powershell.exe`。 |
 
@@ -72,7 +72,7 @@ pwsh.exe -NoProfile -ExecutionPolicy Bypass -File scripts/endnote-word.ps1 -Acti
 將 `skills/endnote-for-word` 複製至 `%USERPROFILE%\.codex\skills\endnote-for-word` 或 `%USERPROFILE%\.agents\skills\endnote-for-word`，再註冊 MCP server：
 
 ```console
-codex mcp add endnote-for-word -- pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
+codex mcp add endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 codex mcp get endnote-for-word
 ```
 
@@ -83,7 +83,7 @@ Release 亦包含 `.codex-plugin/plugin.json`、`.codex-mcp.json` 與 `dist/endn
 將 `skills/endnote-for-word` 複製至 `%USERPROFILE%\.claude\skills\endnote-for-word`，再註冊 MCP server：
 
 ```console
-claude mcp add --scope user endnote-for-word -- pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
+claude mcp add --scope user endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 claude mcp get endnote-for-word
 ```
 
@@ -97,7 +97,7 @@ Release 亦包含 `.claude-plugin/plugin.json`、`.mcp.json` 與合併 plugin �
 {
   "mcpServers": {
     "endnote-for-word": {
-      "command": "pwsh.exe",
+      "command": "powershell.exe",
       "args": ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "<REPO_ROOT>\\scripts\\run-mcp.ps1"]
     }
   }
@@ -243,7 +243,7 @@ Bridge 會保留來源檔，透過同層暫存 DOCX 完成儲存；除非明確�
 python scripts/package_plugin.py
 ```
 
-命令會產生 `dist/endnote-for-word-plugin.zip` 及 SHA-256 檔。獨立 skill 套件為 `dist/endnote-for-word.skill`。
+命令會產生 `dist/endnote-for-word-plugin.zip`、獨立 skill 套件 `dist/endnote-for-word.skill`，以及各自的 SHA-256 檔。版本異動見 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 問題與交流
 

@@ -39,7 +39,7 @@ The bridge is a single PowerShell script written for both PowerShell 7 and Windo
 | Active terminal | Required action |
 |---|---|
 | PowerShell 7+ | Run the commands directly with `pwsh.exe`. |
-| Windows PowerShell 5.1 | Supported. Run with `powershell.exe`, but prefer `pwsh.exe` when it is installed. |
+| Windows PowerShell 5.1 | Supported. Run with `powershell.exe`, but prefer `pwsh.exe` when it is installed. Without `pwsh.exe`, the first call other than `probe`, `list-styles` or `validate` installs PowerShell 7 per user through winget (no administrator rights), and the result says so; read-only calls made before that announce it; set `ENDNOTE_WORD_AUTO_INSTALL_PWSH=0` to opt out. The MCP registration commands below launch the server with `powershell.exe` so it also starts before PowerShell 7 exists. |
 | Bash on Windows, including Git Bash | Invoke Windows `pwsh.exe`, and fall back to `powershell.exe`. |
 | CMD | Invoke `pwsh.exe` with the same arguments, and fall back to `powershell.exe`. |
 
@@ -72,7 +72,7 @@ Replace `<REPO_ROOT>` with the absolute local checkout path. Preserve existing M
 Copy `skills/endnote-for-word` to `%USERPROFILE%\.codex\skills\endnote-for-word` or `%USERPROFILE%\.agents\skills\endnote-for-word`, then register the server:
 
 ```console
-codex mcp add endnote-for-word -- pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
+codex mcp add endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 codex mcp get endnote-for-word
 ```
 
@@ -83,7 +83,7 @@ The release also contains `.codex-plugin/plugin.json`, `.codex-mcp.json`, and `d
 Copy `skills/endnote-for-word` to `%USERPROFILE%\.claude\skills\endnote-for-word`, then register the server:
 
 ```console
-claude mcp add --scope user endnote-for-word -- pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
+claude mcp add --scope user endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 claude mcp get endnote-for-word
 ```
 
@@ -97,7 +97,7 @@ Upload `dist/endnote-for-word.skill` from **Customize > Skills**. Then merge thi
 {
   "mcpServers": {
     "endnote-for-word": {
-      "command": "pwsh.exe",
+      "command": "powershell.exe",
       "args": ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "<REPO_ROOT>\\scripts\\run-mcp.ps1"]
     }
   }
@@ -243,7 +243,7 @@ Use the available scholarly-search or web tools to find one highly relevant peer
 python scripts/package_plugin.py
 ```
 
-The command creates `dist/endnote-for-word-plugin.zip` and its SHA-256 file. The standalone skill package is `dist/endnote-for-word.skill`.
+The command creates `dist/endnote-for-word-plugin.zip`, the standalone skill package `dist/endnote-for-word.skill`, and a SHA-256 file for each. Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Issues and discussion
 

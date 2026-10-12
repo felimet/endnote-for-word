@@ -43,4 +43,6 @@ jobs:
           path: |
             dist/endnote-for-word-plugin.zip
             dist/endnote-for-word-plugin.zip.sha256
+            dist/endnote-for-word.skill
+            dist/endnote-for-word.skill.sha256
           if-no-files-found: error

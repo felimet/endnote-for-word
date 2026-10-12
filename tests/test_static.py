@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 PACKAGE_NAME = "endnote-for-word"
-RELEASE_VERSION = "1.2.0"
+RELEASE_VERSION = "1.3.0"
 RELEASE_AUTHOR = "Jia-Ming Zhou (Felimet)"
 SKILL_DIRECTORY = ROOT / "skills" / PACKAGE_NAME
 SKILL_PATH = SKILL_DIRECTORY / "SKILL.md"
@@ -26,7 +26,7 @@ SKILL_MAXIMUM_LINES = 500
 MINIMUM_FILE_BACKED_EVALS = 6
 
 PROSE_SUFFIXES = {".md", ".json", ".yaml", ".yml", ".py", ".ps1", ".txt", ".ris"}
-IGNORED_DIRECTORIES = {".git", "__pycache__", ".venv", "node_modules"}
+IGNORED_DIRECTORIES = {".git", ".claude", "__pycache__", ".venv", "node_modules"}
 
 EM_DASH = "—"
 EN_DASH = "–"
@@ -110,7 +110,8 @@ def iter_repository_files(suffixes: set[str]) -> list[Path]:
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue
-        if IGNORED_DIRECTORIES.intersection(path.parts):
+        # Relative parts: the checkout itself may live under .claude/worktrees.
+        if IGNORED_DIRECTORIES.intersection(path.relative_to(ROOT).parts):
             continue
         if path.suffix.lower() in suffixes:
             found.append(path)
@@ -294,7 +295,11 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("PLUGIN_ROOT", claude)
         self.assertIn("${PLUGIN_ROOT}", codex)
         for text in (claude, codex):
-            self.assertIn(PACKAGE_NAME, json.loads(text)["mcpServers"].keys())
+            servers = json.loads(text)["mcpServers"]
+            self.assertIn(PACKAGE_NAME, servers.keys())
+            # powershell.exe ships with every supported Windows, so the server starts before
+            # PowerShell 7 exists; the bridge itself still runs under pwsh.exe when present.
+            self.assertEqual(servers[PACKAGE_NAME]["command"], "powershell.exe")
 
 
 class DefaultsTests(unittest.TestCase):
@@ -365,6 +370,20 @@ class BridgeContractTests(unittest.TestCase):
         self.assertIn("Set-StrictMode -Version Latest", text)
         self.assertIn("$ErrorActionPreference = 'Stop'", text)
 
+    def test_bridge_reads_text_files_through_the_strict_utf8_reader(self) -> None:
+        # Get-Content without -Encoding uses the ANSI code page on Windows PowerShell 5.1, and
+        # File.ReadAllText turns lenient as soon as it sees a byte order mark.
+        code = strip_powershell_literals(BRIDGE_PATH.read_text(encoding="utf-8"))
+        self.assertIn("New-Object System.Text.UTF8Encoding($true, $true)", code)
+        for reader in (r"\bGet-Content\b", r"\bReadAllText\b", r"\bReadAllLines\b"):
+            with self.subTest(reader=reader):
+                self.assertIsNone(re.search(reader, code))
+
+    def test_bridge_hands_out_plain_file_system_paths(self) -> None:
+        # (Resolve-Path).Path is provider-qualified for UNC files, which Python and Word reject.
+        code = strip_powershell_literals(BRIDGE_PATH.read_text(encoding="utf-8"))
+        self.assertIsNone(re.search(r"\bResolve-Path\b", code))
+
     def test_bridge_never_calls_a_modal_endnote_macro(self) -> None:
         text = BRIDGE_PATH.read_text(encoding="utf-8")
         for macro in (
@@ -422,6 +441,22 @@ class PowerShellCompatibilityTests(unittest.TestCase):
                     path.read_text(encoding="utf-8-sig")
                 )
                 self.assertEqual(findings, [], f"{path.relative_to(ROOT)}: {findings}")
+
+    def test_word_save_calls_pass_a_plain_string_path(self) -> None:
+        # Under Windows PowerShell 5.1, Word never returned from SaveAs2 when the path was uncast
+        # Join-Path output; a [string] cast made it return. The cause inside Word is unknown, so
+        # every save call keeps the cast.
+        calls = []
+        for path in iter_repository_files({".ps1"}):
+            code = strip_powershell_literals(path.read_text(encoding="utf-8-sig"))
+            calls.extend(
+                (path, match)
+                for match in re.finditer(r"\.SaveAs2?\(\s*([^,)]*)", code, re.IGNORECASE)
+            )
+        self.assertTrue(calls, "no Word save call was found to check")
+        for path, match in calls:
+            with self.subTest(path=path.relative_to(ROOT), argument=match.group(1)):
+                self.assertRegex(match.group(1), r"(?i)^\(*\s*\[string\]", match.group(0))
 
     def test_every_script_forces_utf8_console_output(self) -> None:
         for path in iter_repository_files({".ps1"}):

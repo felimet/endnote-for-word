@@ -25,7 +25,7 @@ BRIDGE = ROOT / "scripts" / "endnote-word.ps1"
 POWERSHELL_ENV_VARIABLE = "ENDNOTE_WORD_POWERSHELL"
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "endnote-for-word"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5
 
 STUB_RESULT = {"ok": True, "action": "stub", "checks": {"stub_bridge": True}}
@@ -241,17 +241,66 @@ class McpProtocolTests(unittest.TestCase):
         server = load_server_module()
         previous = os.environ.pop("ENDNOTE_WORD_TIMEOUT_SECONDS", None)
         try:
-            with tempfile.TemporaryDirectory(prefix="endnote-timeout-") as directory:
-                manifest = Path(directory) / "manifest.json"
-                manifest.write_text(
-                    json.dumps({"citations": [{"id": str(index)} for index in range(83)]}),
-                    encoding="utf-8",
-                )
-                timeout = server._timeout_seconds("render", {"manifest_path": str(manifest)})
+            # The bridge and the precheck accept an optional BOM, so the budget must as well.
+            for encoding in ("utf-8", "utf-8-sig"):
+                with self.subTest(encoding=encoding):
+                    with tempfile.TemporaryDirectory(prefix="endnote-timeout-") as directory:
+                        manifest = Path(directory) / "manifest.json"
+                        manifest.write_text(
+                            json.dumps({"citations": [{"id": str(index)} for index in range(83)]}),
+                            encoding=encoding,
+                        )
+                        timeout = server._timeout_seconds("render", {"manifest_path": str(manifest)})
+                    self.assertEqual(timeout, 724)
         finally:
             if previous is not None:
                 os.environ["ENDNOTE_WORD_TIMEOUT_SECONDS"] = previous
-        self.assertEqual(timeout, 724)
+
+    def test_powershell_notice_survives_a_bridge_timeout(self) -> None:
+        if os.name != "nt":
+            self.skipTest("The stub bridge is a Windows batch file.")
+        server = load_server_module()
+        notice = {"status": "installing", "message": "PowerShell 7 is being installed."}
+        previous = os.environ.get("ENDNOTE_WORD_POWERSHELL")
+        try:
+            with tempfile.TemporaryDirectory(prefix="endnote-notice-") as directory:
+                stub = Path(directory, "slow-bridge.cmd")
+                stub.write_text(
+                    "@echo off\r\n"
+                    f"echo POWERSHELL_NOTICE={json.dumps(notice)} 1>&2\r\n"
+                    "ping -n 4 127.0.0.1 >nul\r\n",
+                    encoding="ascii",
+                )
+                os.environ["ENDNOTE_WORD_POWERSHELL"] = str(stub)
+                result = server._invoke_bridge("probe", {}, timeout=1)
+        finally:
+            if previous is None:
+                os.environ.pop("ENDNOTE_WORD_POWERSHELL", None)
+            else:
+                os.environ["ENDNOTE_WORD_POWERSHELL"] = previous
+        self.assertFalse(result["ok"])
+        self.assertIn("timed out", result["error"])
+        self.assertEqual(result["powershell_notice"], notice)
+
+    def test_powershell_7_is_found_at_its_known_location_without_path(self) -> None:
+        server = load_server_module()
+        names = ("ENDNOTE_WORD_POWERSHELL", "PATH", "LOCALAPPDATA")
+        previous = {name: os.environ.get(name) for name in names}
+        try:
+            with tempfile.TemporaryDirectory(prefix="endnote-pwsh7-") as directory:
+                alias = Path(directory, "Microsoft", "WindowsApps", "pwsh.exe")
+                alias.parent.mkdir(parents=True)
+                alias.write_bytes(b"")
+                os.environ.pop("ENDNOTE_WORD_POWERSHELL", None)
+                os.environ["PATH"] = str(Path(directory, "empty"))
+                os.environ["LOCALAPPDATA"] = directory
+                self.assertEqual(server._powershell_executable(), str(alias))
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
     def test_explicit_timeout_overrides_manifest_scaling(self) -> None:
         server = load_server_module()
