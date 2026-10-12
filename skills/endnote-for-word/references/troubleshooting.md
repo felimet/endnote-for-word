@@ -28,7 +28,7 @@
 | Save fails with an access or sharing error | The output DOCX is open in Word or held by another process | Close it or pick a new output path. See section 7. |
 | Chinese text in the console renders as garbage | Console code page is cp950 | Force UTF-8 in the terminal. See section 8. |
 | `WINWORD.EXE` remains after a failed job | A COM call blocked and the process was orphaned | Kill only the PID the failed job created. See section 9. |
-| Timeout whose `stderr_tail` ends at `Saving temporary DOCX` | Word's `SaveAs2` never returned; the cause is undiagnosed | Check whether the same document saves by hand to a local folder. See section 9. |
+| Timeout whose `stderr_tail` ends at `Saving temporary DOCX` | Word's `SaveAs2` never returned; on Windows PowerShell 5.1 it followed passing uncast `Join-Path` output as the file name | Update the bridge, prefer PowerShell 7, and clear Word's recovery state after the kill. See section 9. |
 | `no such collation sequence: ENCI_Base` | The SQLite reader queried without registering the custom collations | Register the two no-op collations before querying. See section 10. |
 | Library read fails with a lock or malformed database error | The original `sdb.eni` was opened, or EndNote was mid-write | Copy to a temp file first, open the copy read-only, retry. See section 10. |
 | `validate` exits 3 with `{{CITE:` still present | A marker was never replaced | The marker did not occur exactly once in the document. See section 11. |
@@ -47,7 +47,9 @@
 ## The modal dialog hang and watchdog recovery
 
 This is the dominant failure mode of the whole system, so treat it as the default hypothesis
-whenever a call does not return.
+whenever a call does not return. The exception: when `stderr_tail` ends at
+`Saving temporary DOCX` with no `Word SaveAs2 returned` line, no dialog is involved; see
+section 9.
 
 **What happens.** An EndNote add-in dialog opens in the Word instance the bridge is driving.
 The dialog owns the message loop. `Application.Run('ENFormatBibliography')` never returns.
@@ -73,7 +75,7 @@ The result reports `isolated_word_pid` and whether the isolated process was term
 those fields before retrying anything.
 
 **Known triggers, all measured.** Every one of them has a pre-check that runs before Word is
-opened, so a hang means a pre-check was skipped or bypassed:
+opened, so a hang inside `Application.Run` means a pre-check was skipped or bypassed:
 
 | Trigger | Guard |
 |---|---|
@@ -83,9 +85,9 @@ opened, so a hang means a pre-check was skipped or bypassed:
 | Excluded author syntax, for example `{\Thomsen, 2023 #1}` | Same rejection; the bridge never emits a backslash form |
 | Any `*Dlg` macro, for example `ENFormatBibliographyDlg` | The bridge calls no `*Dlg` macro at all |
 
-**After a hang.** Do not immediately re-run the same job. Establish which guard was not
-satisfied, fix the manifest or the style, then re-run the smallest possible fixture before
-the real document.
+**After a hang.** Do not immediately re-run the same job. Clear the Word recovery state the
+watchdog kill left behind (section 9). Establish which guard was not satisfied, fix the
+manifest or the style, then re-run the smallest possible fixture before the real document.
 
 ## Unknown style name
 
@@ -260,23 +262,29 @@ After cleaning up:
 
 **A save that never returns.** When a timed out result shows `stderr_tail` ending at
 `Saving temporary DOCX` with no `Word SaveAs2 returned` line, the job stalled inside Word's
-own `SaveAs2`, after the CWYW macro had returned. The cause is undiagnosed. One report on
-Word 16.0.20430 with EndNote 21.5 describes the same document also stalling on a manual save
-and under `winword /safe`, while a copy without its EndNote fields saved in a fraction of a
-second, and a `WINWORD.EXE` that `taskkill /F` could not end. A process that survives a
-forced kill has a thread blocked in kernel mode, which suggests a driver or file system
-filter; the field content is an equally plausible trigger. Check, in order:
+own `SaveAs2`. What was measured on Word 16.0.20430 with EndNote 21.5: under Windows
+PowerShell 5.1, every run that passed the output of `Join-Path` straight to `SaveAs2` stalled
+(part of one core busy, no file I/O), with or without EndNote fields in the document. The
+same path cast to `[string]`, or built by string concatenation, saved at once, and under
+PowerShell 7 both forms saved. Why Word stalls is not established: the value is wrapped the
+same way on both hosts, and a stand-in COM server that presents Word's own type information
+receives the same by-value string in every form. The bridge casts the path, and a static
+test keeps every save call that way. If you still see this stall:
 
-1. Render to a local folder that no sync client (OneDrive, Dropbox) or network redirection
-   touches.
-2. In Word, open a document that already holds EndNote citations and save a copy by hand.
-   If Word stalls there too, the stall is in Word's own save path and the bridge has no
-   supported workaround.
-3. Run `unformat` on that document into a new file in the same folder. If that save
-   completes at once, the trigger is the field content rather than the folder.
-4. Pause antivirus, EDR or DLP scanning for that folder, or ask the administrator which file
-   system filters are loaded (`fltmc filters` in an elevated prompt).
-5. Report the Word and EndNote builds with the result of each step.
+1. Confirm the bridge in use contains the cast in `Save-DocumentAtomically`.
+2. Prefer PowerShell 7. The bridge host is `pwsh.exe` unless `ENDNOTE_WORD_POWERSHELL` names
+   another one; the probe result's `checks.powershell` field shows the version in use.
+3. Report the PowerShell edition, the Word and EndNote builds, and whether the same render
+   completes under the other PowerShell host.
+
+**Word misbehaves after a forced kill.** Terminating a Word process that had a document open
+leaves an entry under `HKCU\Software\Microsoft\Office\16.0\Word\Resiliency\DocumentRecovery`.
+Observed once, with no Word process left running: while five such entries existed, every
+automated run failed early with "the 'EndNote Cwyw.dotm' global template is not loaded";
+after they were cleared, runs passed that check again. To clear them, open Word, close the
+documents listed in the Document Recovery pane without saving, and quit Word. Alternatively,
+with Word closed, back up the key with `reg export` and delete only the `DocumentRecovery`
+subkeys that point at the job's `.work.docx` or `.tmp.docx` files.
 
 `isolated_word_process_terminated: true` only means `taskkill /F` accepted the request, not
 that the process exited. Check `tasklist /FI "PID eq <isolated_word_pid>"`; a PID still
