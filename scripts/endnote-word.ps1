@@ -881,7 +881,12 @@ function Save-DocumentAtomically {
     $script:TemporarySaveDestination = $Destination
     try {
         Write-Log -Level INFO -Message "Saving temporary DOCX: $temporary"
-        $script:Document.SaveAs2($temporary, $script:WdFormatXmlDocument)
+        # Keep the [string] cast. Under Windows PowerShell 5.1, SaveAs2 given uncast Join-Path
+        # output never returned on any measured run (part of one core busy, no file I/O, with or
+        # without EndNote fields); the cast or a concatenated string returned at once, and
+        # PowerShell 7 returned with either form. The cause inside Word is unknown: the value is
+        # wrapped the same way on both hosts and reaches a stand-in COM server as the same BSTR.
+        $script:Document.SaveAs2([string]$temporary, $script:WdFormatXmlDocument)
         Write-Log -Level INFO -Message 'Word SaveAs2 returned.'
         Stop-Word
         Move-Item -LiteralPath $temporary -Destination $Destination -Force

@@ -438,6 +438,22 @@ class PowerShellCompatibilityTests(unittest.TestCase):
                 )
                 self.assertEqual(findings, [], f"{path.relative_to(ROOT)}: {findings}")
 
+    def test_word_save_calls_pass_a_plain_string_path(self) -> None:
+        # Under Windows PowerShell 5.1, Word never returned from SaveAs2 when the path was uncast
+        # Join-Path output; a [string] cast made it return. The cause inside Word is unknown, so
+        # every save call keeps the cast.
+        calls = []
+        for path in iter_repository_files({".ps1"}):
+            code = strip_powershell_literals(path.read_text(encoding="utf-8-sig"))
+            calls.extend(
+                (path, match)
+                for match in re.finditer(r"\.SaveAs2?\(\s*([^,)]*)", code, re.IGNORECASE)
+            )
+        self.assertTrue(calls, "no Word save call was found to check")
+        for path, match in calls:
+            with self.subTest(path=path.relative_to(ROOT), argument=match.group(1)):
+                self.assertRegex(match.group(1), r"(?i)^\(*\s*\[string\]", match.group(0))
+
     def test_every_script_forces_utf8_console_output(self) -> None:
         for path in iter_repository_files({".ps1"}):
             text = path.read_text(encoding="utf-8-sig")
