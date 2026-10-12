@@ -28,6 +28,7 @@
 | Save fails with an access or sharing error | The output DOCX is open in Word or held by another process | Close it or pick a new output path. See section 7. |
 | Chinese text in the console renders as garbage | Console code page is cp950 | Force UTF-8 in the terminal. See section 8. |
 | `WINWORD.EXE` remains after a failed job | A COM call blocked and the process was orphaned | Kill only the PID the failed job created. See section 9. |
+| Timeout whose `stderr_tail` ends at `Saving temporary DOCX` | Word's `SaveAs2` never returned; the cause is undiagnosed | Check whether the same document saves by hand to a local folder. See section 9. |
 | `no such collation sequence: ENCI_Base` | The SQLite reader queried without registering the custom collations | Register the two no-op collations before querying. See section 10. |
 | Library read fails with a lock or malformed database error | The original `sdb.eni` was opened, or EndNote was mid-write | Copy to a temp file first, open the copy read-only, retry. See section 10. |
 | `validate` exits 3 with `{{CITE:` still present | A marker was never replaced | The marker did not occur exactly once in the document. See section 11. |
@@ -256,6 +257,30 @@ After cleaning up:
 1. Confirm no `.tmp.docx` sibling remains next to the output path.
 2. Confirm the input document is untouched.
 3. Re-run the smallest fixture before the real job.
+
+**A save that never returns.** When a timed out result shows `stderr_tail` ending at
+`Saving temporary DOCX` with no `Word SaveAs2 returned` line, the job stalled inside Word's
+own `SaveAs2`, after the CWYW macro had returned. The cause is undiagnosed. One report on
+Word 16.0.20430 with EndNote 21.5 describes the same document also stalling on a manual save
+and under `winword /safe`, while a copy without its EndNote fields saved in a fraction of a
+second, and a `WINWORD.EXE` that `taskkill /F` could not end. A process that survives a
+forced kill has a thread blocked in kernel mode, which suggests a driver or file system
+filter; the field content is an equally plausible trigger. Check, in order:
+
+1. Render to a local folder that no sync client (OneDrive, Dropbox) or network redirection
+   touches.
+2. In Word, open a document that already holds EndNote citations and save a copy by hand.
+   If Word stalls there too, the stall is in Word's own save path and the bridge has no
+   supported workaround.
+3. Run `unformat` on that document into a new file in the same folder. If that save
+   completes at once, the trigger is the field content rather than the folder.
+4. Pause antivirus, EDR or DLP scanning for that folder, or ask the administrator which file
+   system filters are loaded (`fltmc filters` in an elevated prompt).
+5. Report the Word and EndNote builds with the result of each step.
+
+`isolated_word_process_terminated: true` only means `taskkill /F` accepted the request, not
+that the process exited. Check `tasklist /FI "PID eq <isolated_word_pid>"`; a PID still
+listed after a few minutes is blocked in kernel mode, and usually only a reboot clears it.
 
 ## Library reader failures
 
