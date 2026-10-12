@@ -88,6 +88,11 @@ Direct Export without modifying `sdb.eni` itself.
 }
 ```
 
+Save the manifest as UTF-8; a byte order mark is optional. The bridge and the precheck both
+decode it strictly and reject UTF-16 or a legacy code page such as cp950 or cp936 with
+"could not be read as UTF-8 text" instead of rendering corrupted author names. Strict
+decoding cannot catch the rare legacy file whose bytes also happen to be valid UTF-8.
+
 The build spec does not state whether `bibliography` is required or optional, so treat it
 as present in every manifest you author and do not rely on a default. Validation gate 4
 only fires when `bibliography.expected` is true.

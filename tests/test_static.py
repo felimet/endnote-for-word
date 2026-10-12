@@ -365,6 +365,15 @@ class BridgeContractTests(unittest.TestCase):
         self.assertIn("Set-StrictMode -Version Latest", text)
         self.assertIn("$ErrorActionPreference = 'Stop'", text)
 
+    def test_bridge_reads_text_files_through_the_strict_utf8_reader(self) -> None:
+        # Get-Content without -Encoding uses the ANSI code page on Windows PowerShell 5.1, and
+        # File.ReadAllText turns lenient as soon as it sees a byte order mark.
+        code = strip_powershell_literals(BRIDGE_PATH.read_text(encoding="utf-8"))
+        self.assertIn("New-Object System.Text.UTF8Encoding($true, $true)", code)
+        for reader in (r"\bGet-Content\b", r"\bReadAllText\b", r"\bReadAllLines\b"):
+            with self.subTest(reader=reader):
+                self.assertIsNone(re.search(reader, code))
+
     def test_bridge_never_calls_a_modal_endnote_macro(self) -> None:
         text = BRIDGE_PATH.read_text(encoding="utf-8")
         for macro in (

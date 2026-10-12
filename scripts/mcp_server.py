@@ -541,7 +541,7 @@ def _default_timeout_seconds(action: str, arguments: dict[str, Any]) -> int:
     if not isinstance(manifest_path, str) or not manifest_path.strip():
         return DEFAULT_TIMEOUT_SECONDS
     try:
-        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8-sig"))
         citations = manifest.get("citations") if isinstance(manifest, dict) else None
         citation_count = len(citations) if isinstance(citations, list) else 0
     except (OSError, UnicodeError, json.JSONDecodeError):

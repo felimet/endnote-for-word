@@ -241,17 +241,20 @@ class McpProtocolTests(unittest.TestCase):
         server = load_server_module()
         previous = os.environ.pop("ENDNOTE_WORD_TIMEOUT_SECONDS", None)
         try:
-            with tempfile.TemporaryDirectory(prefix="endnote-timeout-") as directory:
-                manifest = Path(directory) / "manifest.json"
-                manifest.write_text(
-                    json.dumps({"citations": [{"id": str(index)} for index in range(83)]}),
-                    encoding="utf-8",
-                )
-                timeout = server._timeout_seconds("render", {"manifest_path": str(manifest)})
+            # The bridge and the precheck accept an optional BOM, so the budget must as well.
+            for encoding in ("utf-8", "utf-8-sig"):
+                with self.subTest(encoding=encoding):
+                    with tempfile.TemporaryDirectory(prefix="endnote-timeout-") as directory:
+                        manifest = Path(directory) / "manifest.json"
+                        manifest.write_text(
+                            json.dumps({"citations": [{"id": str(index)} for index in range(83)]}),
+                            encoding=encoding,
+                        )
+                        timeout = server._timeout_seconds("render", {"manifest_path": str(manifest)})
+                    self.assertEqual(timeout, 724)
         finally:
             if previous is not None:
                 os.environ["ENDNOTE_WORD_TIMEOUT_SECONDS"] = previous
-        self.assertEqual(timeout, 724)
 
     def test_explicit_timeout_overrides_manifest_scaling(self) -> None:
         server = load_server_module()

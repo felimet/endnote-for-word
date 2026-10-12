@@ -291,6 +291,44 @@ function Get-OptionalProperty {
     return $property.Value
 }
 
+function Read-StrictUtf8Text {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Label
+    )
+    # Text inputs are UTF-8 with an optional BOM, the contract endnote_library.py enforces with
+    # utf-8-sig. Get-Content without -Encoding decodes with the ANSI code page on Windows
+    # PowerShell 5.1, and File.ReadAllText switches to a lenient decoder whenever it sees a
+    # BOM. This reader never detects BOMs: the UTF-8 BOM is stripped as the preamble of the
+    # strict encoding, so UTF-16 files and invalid bytes, BOM or not, fail here instead of
+    # passing with corrupted names.
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($true, $true)
+    # Resolve-Path reports a UNC file as Microsoft.PowerShell.Core\FileSystem::\\server\...,
+    # which .NET cannot open; Convert-Path yields the plain file system path. ReadWrite sharing
+    # matches Get-Content, so a file another program holds open for writing stays readable.
+    $stream = $null
+    try {
+        $stream = New-Object System.IO.FileStream((Convert-Path -LiteralPath $Path), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $reader = New-Object System.IO.StreamReader($stream, $strictUtf8, $false)
+        return $reader.ReadToEnd()
+    }
+    catch { throw "$Label could not be read as UTF-8 text ($Path): $($_.Exception.Message)" }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function Read-Utf8JsonFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $text = Read-StrictUtf8Text -Path $Path -Label $Label
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    try { return $text | ConvertFrom-Json }
+    catch { throw "$Label is not valid JSON ($Path): $($_.Exception.Message)" }
+}
+
 function Get-AgentDefaults {
     $path = $script:PackagedDefaultsPath
     if (Test-Path -LiteralPath $script:UserDefaultsPath -PathType Leaf) {
@@ -299,8 +337,9 @@ function Get-AgentDefaults {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Agent defaults are missing: $path"
     }
-    try { return Get-Content -Raw -LiteralPath $path | ConvertFrom-Json }
-    catch { throw "Agent defaults are not valid JSON ($path): $($_.Exception.Message)" }
+    $defaults = Read-Utf8JsonFile -Path $path -Label 'The agent defaults file'
+    if ($null -eq $defaults) { throw "The agent defaults file is empty: $path" }
+    return $defaults
 }
 
 function Get-DefaultOutputStyle {
@@ -402,6 +441,8 @@ function Invoke-ManifestPrecheck {
     }
     $details = New-Object System.Collections.Generic.List[string]
     foreach ($problem in @(Get-OptionalProperty -Object $result -Name 'problems')) {
+        # A failure without a problems array yields @($null), which would add an empty ': '.
+        if ($null -eq $problem) { continue }
         $details.Add(([string](Get-OptionalProperty -Object $problem -Name 'problem')) + ': ' + ([string](Get-OptionalProperty -Object $problem -Name 'message')))
     }
     $errorText = [string](Get-OptionalProperty -Object $result -Name 'error')
@@ -1199,11 +1240,7 @@ function Get-EndNoteLibraries {
 function Read-Manifest {
     param([Parameter(Mandatory)][string]$Path)
     $resolved = Resolve-ExistingFile -Path $Path -Label 'ManifestPath'
-    $manifest = $null
-    # -Encoding UTF8: Windows PowerShell 5.1 would otherwise read a BOM-less UTF-8 manifest with
-    # the system ANSI codepage, which mangles non-ASCII author names into invalid JSON.
-    try { $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $resolved | ConvertFrom-Json }
-    catch { throw "ManifestPath is not valid JSON ($resolved): $($_.Exception.Message)" }
+    $manifest = Read-Utf8JsonFile -Path $resolved -Label 'ManifestPath'
     if ($null -eq $manifest) { throw "ManifestPath is empty: $resolved" }
     $schemaVersion = Get-OptionalProperty -Object $manifest -Name 'schema_version'
     if ($schemaVersion -ne $script:ManifestSchemaVersion) {
@@ -1961,9 +1998,8 @@ function Invoke-ConfigureDefaults {
     if (-not (Test-Path -LiteralPath $script:PackagedDefaultsPath -PathType Leaf)) {
         throw "Packaged defaults are missing: $script:PackagedDefaultsPath"
     }
-    $defaults = $null
-    try { $defaults = Get-Content -Raw -LiteralPath $script:PackagedDefaultsPath | ConvertFrom-Json }
-    catch { throw "Packaged defaults are not valid JSON ($script:PackagedDefaultsPath): $($_.Exception.Message)" }
+    $defaults = Read-Utf8JsonFile -Path $script:PackagedDefaultsPath -Label 'The packaged defaults file'
+    if ($null -eq $defaults) { throw "The packaged defaults file is empty: $script:PackagedDefaultsPath" }
 
     New-Item -ItemType Directory -Path $script:UserConfigDirectory -Force | Out-Null
     Copy-Item -LiteralPath $script:PackagedDefaultsPath -Destination $script:UserDefaultsPath -Force
@@ -2265,8 +2301,7 @@ function Invoke-ImportRis {
     if ([IO.Path]::GetExtension($resolvedRis) -ine $script:RisExtension) {
         throw "RisPath must use the $($script:RisExtension) extension: $resolvedRis"
     }
-    $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
-    $risText = [IO.File]::ReadAllText($resolvedRis, $strictUtf8)
+    $risText = Read-StrictUtf8Text -Path $resolvedRis -Label 'RisPath'
     $risRecordCount = [regex]::Matches($risText, '(?m)^TY  - ').Count
     if ($risRecordCount -lt 1) {
         throw 'RisPath contains no RIS records (no line beginning with TY  - ).'
