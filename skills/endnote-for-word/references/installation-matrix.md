@@ -172,14 +172,8 @@ Copy the skill directory:
 Register and inspect the MCP server:
 
 ```console
-claude mcp add --scope user endnote-for-word -- pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
-claude mcp get endnote-for-word
-```
-
-On a machine with no PowerShell 7, use the 5.1 executable in the same position:
-
-```console
 claude mcp add --scope user endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
+claude mcp get endnote-for-word
 ```
 
 The repository also ships `.claude-plugin/plugin.json` and `.mcp.json` for a managed plugin
@@ -192,22 +186,16 @@ installing or changing a skill.
 Claude Desktop needs both layers, the skill and the MCP server.
 
 1. Upload the skill through **Customize > Skills**. That uploader takes a ZIP of the skill
-   folder itself, meaning the folder that contains `SKILL.md`, so build it from
-   `skills\endnote-for-word`:
+   folder itself, meaning the folder that contains `SKILL.md`. Build it with:
 
-   ```powershell
-   New-Item -ItemType Directory -Force -Path "<REPO_ROOT>\dist" | Out-Null
-   Compress-Archive -Path "<REPO_ROOT>\skills\endnote-for-word" -DestinationPath "<REPO_ROOT>\dist\endnote-for-word-skill.zip" -Force
+   ```console
+   python scripts\package_plugin.py
    ```
 
-   `Compress-Archive` fails when the destination directory does not exist yet, which is why
-   the first line is there.
-
-   See <https://support.claude.com/en/articles/12512180-use-skills-in-claude>.
-   `python scripts\package_plugin.py` is a different artefact: it archives the whole
-   repository to `dist\endnote-for-word-plugin.zip`, writes a `.sha256` sidecar, and prints
-   the path and the digest. That bundle is for plugin aware hosts, not for the Skills
-   uploader.
+   and upload `dist\endnote-for-word.skill`, which holds only `skills\endnote-for-word`. The
+   same command writes `dist\endnote-for-word-plugin.zip`, the whole repository for plugin
+   aware hosts, and a `.sha256` sidecar for each archive. See
+   <https://support.claude.com/en/articles/12512180-use-skills-in-claude>.
 2. Merge the server entry below into `%APPDATA%\Claude\claude_desktop_config.json`. Merge,
    do not overwrite: that file usually already contains other servers.
 
@@ -215,7 +203,7 @@ Claude Desktop needs both layers, the skill and the MCP server.
 {
   "mcpServers": {
     "endnote-for-word": {
-      "command": "pwsh.exe",
+      "command": "powershell.exe",
       "args": [
         "-NoLogo",
         "-NoProfile",
@@ -230,9 +218,8 @@ Claude Desktop needs both layers, the skill and the MCP server.
 }
 ```
 
-Replace `pwsh.exe` with `powershell.exe` if PowerShell 7 is not installed. Restart Claude
-Desktop, call `probe_endnote_word`, and run a fixture render before touching a real
-manuscript.
+The bridge still runs under PowerShell 7 whenever it is installed. Restart Claude Desktop,
+call `probe_endnote_word`, and run a fixture render before touching a real manuscript.
 
 ## Codex
 
@@ -246,7 +233,7 @@ Copy the skill directory to either supported skill root:
 Register and inspect the MCP server:
 
 ```console
-codex mcp add endnote-for-word -- pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
+codex mcp add endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 codex mcp get endnote-for-word
 ```
 
