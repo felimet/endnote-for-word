@@ -402,8 +402,11 @@ function Invoke-HiddenProcess {
     $process.StartInfo = $startInfo
     try {
         if (-not $process.Start()) { throw "The child process did not start: $Executable" }
+        # Drain stderr concurrently. Reading the pipes one after the other deadlocks as soon as
+        # the child fills the stderr pipe buffer while this side still blocks on stdout.
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
         $process.WaitForExit()
         return [ordered]@{ exit_code = $process.ExitCode; stdout = $stdout; stderr = $stderr }
     }
