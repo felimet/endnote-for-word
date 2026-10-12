@@ -39,7 +39,7 @@ Bridge 為單一 PowerShell 腳本，同時相容 PowerShell 7 與 Windows Power
 | 目前終端機 | 執行方式 |
 |---|---|
 | PowerShell 7+ | 直接以 `pwsh.exe` 執行命令。 |
-| Windows PowerShell 5.1 | 支援。可用 `powershell.exe` 執行；若已安裝 `pwsh.exe` 則優先使用。若沒有 `pwsh.exe`，唯讀呼叫會先預告，第一個編輯文件的呼叫再以 winget 為目前使用者安裝 PowerShell 7（不需系統管理員權限），並在結果中告知；設定 `ENDNOTE_WORD_AUTO_INSTALL_PWSH=0` 可停用。下方的 MCP 註冊命令以 `powershell.exe` 啟動 server，因此尚未安裝 PowerShell 7 時也能啟動。 |
+| Windows PowerShell 5.1 | 支援。可用 `powershell.exe` 執行；若已安裝 `pwsh.exe` 則優先使用。若沒有 `pwsh.exe`，第一個非唯讀呼叫（`probe`、`list-styles`、`validate` 以外）會以 winget 為目前使用者安裝 PowerShell 7（不需系統管理員權限），並在結果中告知；在此之前的唯讀呼叫會先預告；設定 `ENDNOTE_WORD_AUTO_INSTALL_PWSH=0` 可停用。下方的 MCP 註冊命令以 `powershell.exe` 啟動 server，因此尚未安裝 PowerShell 7 時也能啟動。 |
 | Windows 上的 Bash，包括 Git Bash | 呼叫 Windows `pwsh.exe`，找不到時退回 `powershell.exe`。 |
 | CMD | 以相同參數呼叫 `pwsh.exe`，找不到時退回 `powershell.exe`。 |
 

@@ -72,8 +72,9 @@ When the bridge runs under Windows PowerShell 5.1, no `pwsh.exe` exists, and
 `ENDNOTE_WORD_POWERSHELL` is not set, it installs PowerShell 7 for the current user:
 
 1. The read-only actions (`probe`, `list-styles`, `validate`) never install anything. They
-   return a `pending` notice saying that the next call that edits a document will install it,
-   so the user hears about it first.
+   return a `pending` notice, on every such call, saying that the next call that is not
+   read-only will install it. A session that starts with `probe`, as the workflow does,
+   therefore announces it before anything changes.
 2. The first other action starts `winget install --id Microsoft.PowerShell --scope user
    --installer-type msix --no-upgrade --silent`, accepting the winget source and package
    agreements on the user's behalf. winget runs detached, so that call returns as usual under
@@ -277,7 +278,7 @@ repository or a Codex skill directory on its own.
 | Variable | Default | Effect |
 |---|---|---|
 | `ENDNOTE_WORD_POWERSHELL` | unset | Absolute path to the PowerShell executable the MCP server should launch. Overrides the `pwsh.exe` then `powershell.exe` search, which otherwise runs on every call. |
-| `ENDNOTE_WORD_AUTO_INSTALL_PWSH` | on | Under Windows PowerShell 5.1 without `pwsh.exe`, the first call that edits a document installs PowerShell 7 per user with winget (MSIX, no administrator rights) and reports it through `powershell_notice`; read-only calls only announce it. Set to `0` to opt out. A set `ENDNOTE_WORD_POWERSHELL` also disables it. |
+| `ENDNOTE_WORD_AUTO_INSTALL_PWSH` | on | Under Windows PowerShell 5.1 without `pwsh.exe`, the first call other than `probe`, `list-styles` or `validate` installs PowerShell 7 per user with winget (MSIX, no administrator rights) and reports it through `powershell_notice`; read-only calls only announce it. Set to `0` to opt out. A set `ENDNOTE_WORD_POWERSHELL` also disables it. |
 | `ENDNOTE_WORD_PYTHON` | unset | Absolute path to the Python interpreter `run-mcp.ps1` uses to host the MCP server. Overrides the `python.exe`, `python3.exe`, `python`, `python3` search on `PATH`. |
 | `ENDNOTE_WORD_TIMEOUT_SECONDS` | unset | Explicit MCP watchdog timeout. Without it, calls use 240 seconds; render grows to `max(240, 60 + 8 * citation_count)`, capped at 1800 seconds. On expiry the server terminates only processes the call created. |
 | `ENDNOTE_AUTOMATION_TIMEOUT_MS` | `60000` | Bridge side limit for polling until the expected citation field count is reached after `ENFormatBibliography`. |

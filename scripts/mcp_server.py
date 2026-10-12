@@ -961,7 +961,7 @@ def _handle(message: dict[str, Any]) -> dict[str, Any] | None:
                     "EndNote itself against the exact requested library. When a result carries "
                     "powershell_notice, tell the user its message: under Windows PowerShell 5.1 "
                     "without pwsh.exe, read-only calls announce a PowerShell 7 install and the first "
-                    "call that edits a document starts it in the background."
+                    "call other than probe, list-styles or validate starts it in the background."
                 ),
             },
         )

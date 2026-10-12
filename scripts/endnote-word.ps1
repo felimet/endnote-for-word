@@ -795,8 +795,8 @@ function Resolve-StyleName {
 # ---------------------------------------------------------------------------------------------
 # PowerShell 7 auto-install. Windows PowerShell 5.1 stays supported, but PowerShell 7 is the
 # preferred host. Under 5.1 without pwsh.exe, read-only actions only announce the install; the
-# first action that edits a document starts one per-user winget install, detached so the
-# current call is not held up, and records it under %LOCALAPPDATA%. Each state change is
+# first action that is not read-only starts one per-user winget install, detached so the
+# current call is not held up, and records it under %LOCALAPPDATA%. Each later state change is
 # reported once through powershell_notice in the JSON result and as a stderr marker that the
 # MCP server can still recover when the call itself times out.
 # ---------------------------------------------------------------------------------------------
@@ -969,7 +969,7 @@ function Update-PowerShell7AutoInstall {
             "automatically. The bridge uses Windows PowerShell 5.1, which is supported. Install PowerShell 7 from $($script:PowerShellInstallUrl).")
     }
     if ($readOnly) {
-        return New-Pwsh7Notice -Status 'pending' -Message ("PowerShell 7 is not installed. The next call that edits a document will install it in the " +
+        return New-Pwsh7Notice -Status 'pending' -Message ("PowerShell 7 is not installed. The next call other than $($script:ReadOnlyActions -join ', ') will install it in the " +
             "background with winget (package $($script:Pwsh7WingetPackageId), per-user MSIX, no administrator rights), accepting " +
             "the winget source and package agreements on the user's behalf. $optOutText")
     }
