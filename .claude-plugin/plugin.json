@@ -6,6 +6,8 @@
     "name": "Jia-Ming Zhou (Felimet)"
   },
   "license": "MIT",
+  "homepage": "https://github.com/felimet/endnote-for-word",
+  "repository": "https://github.com/felimet/endnote-for-word",
   "keywords": [
     "endnote",
     "cite-while-you-write",

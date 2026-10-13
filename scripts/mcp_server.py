@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -26,8 +27,10 @@ from typing import Any, BinaryIO
 
 SERVER_NAME = "endnote-for-word"
 SERVER_VERSION = "1.4.0"
-SCRIPT_PATH = Path(__file__).with_name("endnote-word.ps1")
+# Absolute: main() may leave the folder the server was started in.
+SCRIPT_PATH = Path(__file__).resolve().with_name("endnote-word.ps1")
 SCRIPT_DIRECTORY = SCRIPT_PATH.parent
+PLUGIN_ROOT = SCRIPT_DIRECTORY.parent
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
 # PowerShell selection. PowerShell 7 is preferred, Windows PowerShell 5.1 is accepted;
@@ -1009,6 +1012,11 @@ def _handle(message: dict[str, Any]) -> dict[str, Any] | None:
 def main() -> int:
     _force_utf8_streams()
     _log(f"starting {SERVER_VERSION}")
+    # Codex starts the server in the plugin's install folder, and Windows cannot rename or delete
+    # a process's working folder, so staying there would block plugin updates. Any other folder,
+    # such as a Claude Code project, stays the base for relative paths.
+    if Path.cwd().resolve() == PLUGIN_ROOT:
+        os.chdir(tempfile.gettempdir())
     while True:
         message: dict[str, Any] | None = None
         try:

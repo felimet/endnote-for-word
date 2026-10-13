@@ -69,25 +69,43 @@ pwsh.exe -NoProfile -ExecutionPolicy Bypass -File scripts/endnote-word.ps1 -Acti
 
 ### Codex
 
-將 `skills/endnote-for-word` 複製至 `%USERPROFILE%\.codex\skills\endnote-for-word` 或 `%USERPROFILE%\.agents\skills\endnote-for-word`，再註冊 MCP server：
+由本 repository 的 marketplace 安裝 plugin。Plugin 同時提供 skill 與 MCP server，從安裝資料夾啟動 server，將工具時限設為 1860 秒（高於 server 自身 1800 秒的 render watchdog），並轉傳 `ENDNOTE_*` 設定與 CWYW 範本搜尋所需的 Common Files 變數：
+
+```console
+codex plugin marketplace add felimet/endnote-for-word
+codex plugin add endnote-for-word@endnote-for-word
+```
+
+升級時執行 `codex plugin marketplace upgrade endnote-for-word`，再執行一次 `codex plugin add`。安裝或升級後重新啟動 Codex。
+
+若改為手動註冊，將 `skills/endnote-for-word` 複製至 `%USERPROFILE%\.codex\skills\endnote-for-word` 或 `%USERPROFILE%\.agents\skills\endnote-for-word`，再註冊 MCP server：
 
 ```console
 codex mcp add endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 codex mcp get endnote-for-word
 ```
 
-Release 亦包含 `.codex-plugin/plugin.json`、`.codex-mcp.json` 與 `dist/endnote-for-word-plugin.zip`，供支援 plugin 的部署流程使用。
+Plugin 與手動註冊擇一使用：以 `codex mcp add` 註冊的同名 server 會蓋過 plugin 提供的 server。
 
 ### Claude Code
 
-將 `skills/endnote-for-word` 複製至 `%USERPROFILE%\.claude\skills\endnote-for-word`，再註冊 MCP server：
+由本 repository 的 marketplace 安裝 plugin：
+
+```console
+claude plugin marketplace add felimet/endnote-for-word
+claude plugin install endnote-for-word@endnote-for-word
+```
+
+升級時執行 `claude plugin marketplace update endnote-for-word` 與 `claude plugin update endnote-for-word@endnote-for-word`。
+
+若改為手動註冊，將 `skills/endnote-for-word` 複製至 `%USERPROFILE%\.claude\skills\endnote-for-word`，再註冊 MCP server：
 
 ```console
 claude mcp add --scope user endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 claude mcp get endnote-for-word
 ```
 
-Release 亦包含 `.claude-plugin/plugin.json`、`.mcp.json` 與合併 plugin 套件。安裝後重新啟動 Claude Code。
+Plugin 與手動註冊擇一使用，否則 Claude Code 會同時載入兩個 server 與兩份 skill。安裝或升級後重新啟動 Claude Code。
 
 ### Claude Desktop
 

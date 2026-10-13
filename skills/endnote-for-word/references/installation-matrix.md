@@ -163,7 +163,17 @@ drive.
 
 ## Claude Code
 
-Copy the skill directory:
+Install the plugin from the repository's marketplace; it carries the skill and the MCP server:
+
+```console
+claude plugin marketplace add felimet/endnote-for-word
+claude plugin install endnote-for-word@endnote-for-word
+```
+
+To upgrade, run `claude plugin marketplace update endnote-for-word` and
+`claude plugin update endnote-for-word@endnote-for-word`.
+
+To register the parts by hand instead, copy the skill directory:
 
 ```console
 %USERPROFILE%\.claude\skills\endnote-for-word
@@ -176,10 +186,8 @@ claude mcp add --scope user endnote-for-word -- powershell.exe -NoLogo -NoProfil
 claude mcp get endnote-for-word
 ```
 
-The repository also ships `.claude-plugin/plugin.json` and `.mcp.json` for a managed plugin
-deployment. A local folder is not a marketplace entry, so the portable skill directory plus
-an explicit `claude mcp add` remains the deterministic path. Restart Claude Code after
-installing or changing a skill.
+Use the plugin or the hand registration, not both, or Claude Code loads two servers and two
+skills. Restart Claude Code after installing or changing a skill.
 
 ## Claude Desktop
 
@@ -223,7 +231,17 @@ call `probe_endnote_word`, and run a fixture render before touching a real manus
 
 ## Codex
 
-Copy the skill directory to either supported skill root:
+Install the plugin from the repository's marketplace; it carries the skill and the MCP server:
+
+```console
+codex plugin marketplace add felimet/endnote-for-word
+codex plugin add endnote-for-word@endnote-for-word
+```
+
+To upgrade, run `codex plugin marketplace upgrade endnote-for-word` and then `codex plugin add`
+again.
+
+To register the parts by hand instead, copy the skill directory to either supported skill root:
 
 ```console
 %USERPROFILE%\.codex\skills\endnote-for-word
@@ -237,8 +255,15 @@ codex mcp add endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteract
 codex mcp get endnote-for-word
 ```
 
-The repository ships `.codex-plugin/plugin.json` and `.codex-mcp.json` for plugin aware
-deployment workflows. Restart Codex after changing installed skills or plugins.
+Codex passes an MCP server only a fixed whitelist of environment variables. The plugin's
+`.codex-mcp.json` therefore runs `python scripts/mcp_server.py` with `cwd` set to the installed
+plugin folder, which the server then leaves so a plugin upgrade can replace it, sets
+`tool_timeout_sec = 1860` above the 1800 second render watchdog, and lists in `env_vars` the
+`ENDNOTE_*` settings below plus `OS` and the `COMMONPROGRAMFILES*` variables that the CWYW
+template lookup reads. A hand registration must add the same `env_vars` and
+`tool_timeout_sec` itself. Use the plugin or the hand registration, not both: a server
+registered with `codex mcp add` under the same name takes precedence over the plugin's server.
+Restart Codex after changing installed skills or plugins.
 
 ## ChatGPT
 

@@ -69,25 +69,43 @@ Replace `<REPO_ROOT>` with the absolute local checkout path. Preserve existing M
 
 ### Codex
 
-Copy `skills/endnote-for-word` to `%USERPROFILE%\.codex\skills\endnote-for-word` or `%USERPROFILE%\.agents\skills\endnote-for-word`, then register the server:
+Install the plugin from this repository's marketplace. The plugin carries the skill and the MCP server, starts the server from its installed folder, sets a 1860 s tool limit above the server's own 1800 s render watchdog, and forwards the `ENDNOTE_*` settings plus the Common Files variables the CWYW template lookup needs:
+
+```console
+codex plugin marketplace add felimet/endnote-for-word
+codex plugin add endnote-for-word@endnote-for-word
+```
+
+To upgrade, run `codex plugin marketplace upgrade endnote-for-word` and then the `codex plugin add` command again. Restart Codex after installing or upgrading.
+
+To register the parts by hand instead, copy `skills/endnote-for-word` to `%USERPROFILE%\.codex\skills\endnote-for-word` or `%USERPROFILE%\.agents\skills\endnote-for-word`, then register the server:
 
 ```console
 codex mcp add endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 codex mcp get endnote-for-word
 ```
 
-The release also contains `.codex-plugin/plugin.json`, `.codex-mcp.json`, and `dist/endnote-for-word-plugin.zip` for plugin-aware deployment.
+Use the plugin or the hand registration, not both: a server registered with `codex mcp add` under the same name takes precedence over the plugin's server.
 
 ### Claude Code
 
-Copy `skills/endnote-for-word` to `%USERPROFILE%\.claude\skills\endnote-for-word`, then register the server:
+Install the plugin from this repository's marketplace:
+
+```console
+claude plugin marketplace add felimet/endnote-for-word
+claude plugin install endnote-for-word@endnote-for-word
+```
+
+To upgrade, run `claude plugin marketplace update endnote-for-word` and `claude plugin update endnote-for-word@endnote-for-word`.
+
+To register the parts by hand instead, copy `skills/endnote-for-word` to `%USERPROFILE%\.claude\skills\endnote-for-word`, then register the server:
 
 ```console
 claude mcp add --scope user endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 claude mcp get endnote-for-word
 ```
 
-The release also contains `.claude-plugin/plugin.json`, `.mcp.json`, and the combined plugin package. Restart Claude Code after installation.
+Use the plugin or the hand registration, not both, or Claude Code loads two servers and two skills. Restart Claude Code after installing or upgrading.
 
 ### Claude Desktop
 

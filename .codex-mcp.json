@@ -1,15 +1,23 @@
 {
   "mcpServers": {
     "endnote-for-word": {
-      "command": "powershell.exe",
+      "command": "python",
       "args": [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        "${PLUGIN_ROOT}/scripts/run-mcp.ps1"
+        "scripts/mcp_server.py"
+      ],
+      "cwd": ".",
+      "tool_timeout_sec": 1860,
+      "env_vars": [
+        "OS",
+        "COMMONPROGRAMFILES",
+        "COMMONPROGRAMFILES(X86)",
+        "COMMONPROGRAMW6432",
+        "ENDNOTE_WORD_POWERSHELL",
+        "ENDNOTE_WORD_AUTO_INSTALL_PWSH",
+        "ENDNOTE_WORD_TIMEOUT_SECONDS",
+        "ENDNOTE_AUTOMATION_TIMEOUT_MS",
+        "ENDNOTE_READY_TIMEOUT_MS",
+        "ENDNOTE_LIBRARY_LOG_LEVEL"
       ]
     }
   }

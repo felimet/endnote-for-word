@@ -17,11 +17,29 @@ All notable changes to this project are documented in this file. The format foll
   `empty_library_template_path`) registers a zero-record library once. A missing import target is
   cloned from it when no template is passed, and re-running `configure-defaults` keeps it.
   `config/defaults.json` gains `library.empty_template_path`.
+- Plugin marketplaces for both clients, so `claude plugin marketplace add felimet/endnote-for-word`
+  and `codex plugin marketplace add felimet/endnote-for-word` install the skill and the MCP
+  server together, and the clients' update commands upgrade them.
 
 ### Changed
 
 - `import_reference_file` no longer requires `library_path`; it requires `ris_path` plus either
   `library_path` or `document_path`.
+- Both plugin manifests declare `homepage` and `repository`; the Codex manifest keeps three
+  default prompts, the number Codex shows.
+
+### Fixed
+
+- The MCP server never started as a Codex plugin. Codex reads `.codex-plugin/plugin.json` as a
+  legacy manifest: it expands no `${PLUGIN_ROOT}`, exports no plugin-root variable, and starts the
+  server in the session folder, so the shared `.mcp.json` launcher looked for `run-mcp.ps1` in the
+  user's project. The Codex manifest now points at `.codex-mcp.json`, which runs
+  `python scripts/mcp_server.py` with `cwd` set to the installed plugin. The server then leaves that
+  folder, because Windows cannot replace a folder a process works in; started anywhere else it
+  stays, so relative paths keep their base under Claude Code.
+- Codex passes only a whitelist of environment variables, which drops `COMMONPROGRAMFILES*`, `OS`
+  and every `ENDNOTE_*` setting, so the probe could not find the CWYW template. `.codex-mcp.json`
+  forwards them by name and sets a 1860 s tool limit above the server's 1800 s render watchdog.
 
 ## [1.3.0] - 2026-10-13
 

@@ -93,7 +93,9 @@ REJECTED_BRIDGE_ACTIONS = ("remove-field-codes",)
 
 JSON_FILES = (
     Path(".claude-plugin/plugin.json"),
+    Path(".claude-plugin/marketplace.json"),
     Path(".codex-plugin/plugin.json"),
+    Path(".agents/plugins/marketplace.json"),
     Path(".mcp.json"),
     Path(".codex-mcp.json"),
     Path("config/defaults.json"),
@@ -288,18 +290,40 @@ class ReleaseMetadataTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, text)
 
-    def test_platform_specific_plugin_root_variables(self) -> None:
+    def test_platform_specific_plugin_launch(self) -> None:
+        # Claude Code substitutes and exports CLAUDE_PLUGIN_ROOT. powershell.exe ships with every
+        # supported Windows, so the server starts before PowerShell 7 exists.
         claude = (ROOT / ".mcp.json").read_text(encoding="utf-8")
-        codex = (ROOT / ".codex-mcp.json").read_text(encoding="utf-8")
         self.assertIn("CLAUDE_PLUGIN_ROOT", claude)
-        self.assertIn("PLUGIN_ROOT", claude)
-        self.assertIn("${PLUGIN_ROOT}", codex)
-        for text in (claude, codex):
-            servers = json.loads(text)["mcpServers"]
-            self.assertIn(PACKAGE_NAME, servers.keys())
-            # powershell.exe ships with every supported Windows, so the server starts before
-            # PowerShell 7 exists; the bridge itself still runs under pwsh.exe when present.
-            self.assertEqual(servers[PACKAGE_NAME]["command"], "powershell.exe")
+        self.assertEqual(json.loads(claude)["mcpServers"][PACKAGE_NAME]["command"], "powershell.exe")
+
+        # Codex reads .codex-plugin/plugin.json as a legacy manifest: it expands no ${PLUGIN_ROOT},
+        # exports no plugin-root variable, resolves a relative cwd against the installed plugin,
+        # and passes only a whitelist of environment variables plus env_vars.
+        manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["mcpServers"], "./.codex-mcp.json")
+        self.assertLessEqual(len(manifest["interface"]["defaultPrompt"]), 3)  # Codex drops the rest and warns
+        codex = json.loads((ROOT / ".codex-mcp.json").read_text(encoding="utf-8"))["mcpServers"][PACKAGE_NAME]
+        self.assertEqual((codex["command"], codex["args"], codex["cwd"]), ("python", ["scripts/mcp_server.py"], "."))
+        self.assertNotIn("${", json.dumps(codex))
+        server = SERVER_PATH.read_text(encoding="utf-8")
+        maximum = int(re.search(r"^MAX_RENDER_TIMEOUT_SECONDS = (\d+)$", server, re.M).group(1))
+        self.assertGreater(codex["tool_timeout_sec"], maximum)  # the server's own watchdog must fire first
+        # The CWYW template is found under Common Files, and every forwarded setting is documented.
+        self.assertTrue({"OS", "COMMONPROGRAMFILES", "COMMONPROGRAMFILES(X86)"} <= set(codex["env_vars"]))
+        matrix = (SKILL_DIRECTORY / "references" / "installation-matrix.md").read_text(encoding="utf-8")
+        for name in codex["env_vars"]:
+            if name.startswith("ENDNOTE_"):
+                with self.subTest(variable=name):
+                    self.assertIn(f"`{name}`", matrix)
+
+    def test_marketplaces_list_the_repository_root_as_the_plugin(self) -> None:
+        claude = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+        codex = json.loads((ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
+        for marketplace, source in ((claude, "./"), (codex, {"source": "local", "path": "./"})):
+            with self.subTest(marketplace=marketplace["name"]):
+                self.assertEqual(marketplace["name"], PACKAGE_NAME)
+                self.assertEqual([(entry["name"], entry["source"]) for entry in marketplace["plugins"]], [(PACKAGE_NAME, source)])
 
 
 class DefaultsTests(unittest.TestCase):

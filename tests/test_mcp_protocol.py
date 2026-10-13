@@ -362,6 +362,38 @@ class McpProtocolTests(unittest.TestCase):
         self.assertEqual(result["structuredContent"], STUB_RESULT)
 
 
+@unittest.skipUnless(os.name == "nt", "Only Windows refuses to rename a process's working folder.")
+class ServerWorkingFolderTests(unittest.TestCase):
+    """Codex starts the server in the installed plugin folder, which an update must replace."""
+
+    def rename_while_serving(self, folder: Path, server: Path) -> None:
+        process = subprocess.Popen(
+            [sys.executable, str(server)], cwd=folder, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+        )
+        try:
+            process.stdin.write('{"jsonrpc":"2.0","id":1,"method":"ping"}\n')
+            process.stdin.flush()
+            self.assertEqual(json.loads(process.stdout.readline())["id"], 1)
+            folder.rename(folder.with_name(folder.name + "-renamed"))
+        finally:
+            terminate(process)
+
+    def test_server_leaves_the_plugin_folder_it_was_started_in(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            plugin = Path(scratch) / "plugin"
+            (plugin / "scripts").mkdir(parents=True)
+            shutil.copy2(SERVER, plugin / "scripts" / SERVER.name)
+            self.rename_while_serving(plugin, plugin / "scripts" / SERVER.name)
+
+    def test_server_keeps_any_other_folder_as_the_base_for_relative_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            project = Path(scratch) / "project"
+            project.mkdir()
+            with self.assertRaises(PermissionError):
+                self.rename_while_serving(project, SERVER)
+
+
 class PluginLauncherTests(unittest.TestCase):
     """The .mcp.json launcher must resolve the plugin root from either variable."""
 
