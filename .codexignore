@@ -1,0 +1,22 @@
+# Local state, generated outputs and user data that Codex must not index.
+.git/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.codex-test-temp/
+graphify-out/
+endnote-for-word-workspace/
+dist/
+evals/results/
+*.log
+
+# Secrets
+.env
+.env.*
+
+# EndNote libraries and Word documents are user data.
+*.enl
+*.Data/
+*.eni
+*.docx

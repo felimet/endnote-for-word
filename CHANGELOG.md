@@ -20,11 +20,16 @@ All notable changes to this project are documented in this file. The format foll
 - Plugin marketplaces for both clients, so `claude plugin marketplace add felimet/endnote-for-word`
   and `codex plugin marketplace add felimet/endnote-for-word` install the skill and the MCP
   server together, and the clients' update commands upgrade them.
+- `SECURITY.md` with private vulnerability reporting, Dependabot updates for GitHub Actions, and a
+  plugin security scan workflow pinned to `hashgraph-online/ai-plugin-scanner-action` v1.2.786.
 
 ### Changed
 
 - `import_reference_file` no longer requires `library_path`; it requires `ris_path` plus either
   `library_path` or `document_path`.
+- Every GitHub Action in CI is pinned to a full commit SHA.
+- `requirements.txt` is removed. It declared no package, because the Python side uses only the
+  standard library.
 - Both plugin manifests declare `homepage` and `repository`; the Codex manifest keeps three
   default prompts, the number Codex shows.
 
