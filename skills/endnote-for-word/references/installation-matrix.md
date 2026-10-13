@@ -294,7 +294,8 @@ repository or a Codex skill directory on its own.
 | `ENDNOTE_WORD_PYTHON` | unset | Absolute path to the Python interpreter `run-mcp.ps1` uses to host the MCP server. Overrides the `python.exe`, `python3.exe`, `python`, `python3` search on `PATH`. |
 | `ENDNOTE_WORD_TIMEOUT_SECONDS` | unset | Explicit MCP watchdog timeout. Without it, calls use 240 seconds; render grows to `max(240, 60 + 8 * citation_count)`, capped at 1800 seconds. On expiry the server terminates only processes the call created. |
 | `ENDNOTE_AUTOMATION_TIMEOUT_MS` | `60000` | Bridge side limit for polling until the expected citation field count is reached after `ENFormatBibliography`. |
-| `ENDNOTE_READY_TIMEOUT_MS` | `90000` | Bridge side limit for waiting until a started EndNote process reports a main window. |
+| `ENDNOTE_READY_TIMEOUT_MS` | `90000` | Limit for waiting until EndNote shows the requested library window, in the bridge and in the MCP job worker. |
+| `ENDNOTE_IDLE_CLOSE_SECONDS` | `120` | An EndNote that the MCP server started is closed once no job has run for this long. `0` closes it right after each job. An EndNote the user started is never closed. |
 | `ENDNOTE_LIBRARY_LOG_LEVEL` | `INFO` | Logging level of `endnote_library.py`. Set to `DEBUG` to see the SQLite statements it issues. Logs go to stderr only, never to stdout. |
 | `ENDNOTE_LIVE_TEST` | unset | Set to `1` to enable the live integration test. |
 | `ENDNOTE_TEST_LIBRARY` | unset | Library path used by the live integration test. Required when `ENDNOTE_LIVE_TEST=1`. |

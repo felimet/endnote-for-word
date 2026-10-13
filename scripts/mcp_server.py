@@ -8,6 +8,11 @@ Two backends sit behind the tool table:
 * ``endnote_library`` is imported in-process for the read-only library tools and the RIS
   export, because those never need Word and must stay fast.
 
+Every bridge action that reaches EndNote runs as a job on one worker thread, because the user's
+single EndNote process serves every CWYW call. Render, update and set-style return a job id at
+once by default; the worker opens the document's library, watches for dialogs while the bridge
+runs, closes what the job opened, and closes an EndNote it started once the queue has been idle.
+
 Everything here is standard library only so the plugin runs on a bare CPython install.
 """
 
@@ -15,12 +20,17 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import traceback
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -63,6 +73,48 @@ MAX_RENDER_TIMEOUT_SECONDS = 1800
 # Processes the timeout watchdog is allowed to clean up. Only PIDs that appeared during the
 # call are ever terminated, so a user's own EndNote session is never killed.
 WATCHED_PROCESS_NAMES = ("WINWORD.EXE", "EndNote.exe")
+WORD_PROCESS_NAME = "WINWORD.EXE"
+ENDNOTE_PROCESS_NAME = "EndNote.exe"
+
+# Jobs. Every action that reaches EndNote is queued, so two calls never drive CWYW at once; the
+# named mutex extends that to every server of this Windows session, such as Claude Code and Codex.
+QUEUED_ACTIONS = frozenset({"probe", "render", "update", "set-style", "unformat", "import-ris"})
+BACKGROUND_TOOLS = frozenset({
+    "render_endnote_word_document", "update_endnote_word_fields", "set_endnote_citation_style",
+})
+JOB_STATUS_TOOL = "get_endnote_job_status"
+JOB_CANCEL_TOOL = "cancel_endnote_job"
+BRIDGE_MUTEX_NAME = "Local\\EndNoteForWordAgentBridge"
+TERMINAL_JOB_STATES = frozenset({"succeeded", "failed", "cancelled"})
+MAX_STATUS_WAIT_SECONDS = 120
+JOB_POLL_SECONDS = 1.0
+LOCK_POLL_MILLISECONDS = 500
+# A dialog is reported once it has stayed this long, so brief progress windows are not noise.
+DIALOG_REPORT_AFTER_SECONDS = 3
+# CWYW choosers that never close by themselves. Measured: with two open libraries whose record
+# numbers overlap, CWYW cannot tell which record a temporary citation means and asks with Select
+# Matching Reference. The job presses Cancel, which picks no record, and lets the bridge finish:
+# ending Word at the chooser instead leaves EndNote unable to exit.
+CANCELLED_DIALOG_TITLES = ("Select Matching Reference",)
+CANCELLED_DIALOG_ADVICE = (
+    "CWYW found more than one open record for a temporary citation, which happens when EndNote has "
+    "another library open whose record numbers overlap the document's library. The job pressed "
+    "Cancel, so no record was chosen. Close the other libraries in EndNote, or run the job while "
+    "only the document's library is open, then retry."
+)
+# An EndNote this server started is closed when no job has run for this long.
+IDLE_CLOSE_ENV_VARIABLE = "ENDNOTE_IDLE_CLOSE_SECONDS"
+DEFAULT_IDLE_CLOSE_SECONDS = 120
+READY_TIMEOUT_ENV_VARIABLE = "ENDNOTE_READY_TIMEOUT_MS"
+DEFAULT_READY_TIMEOUT_MILLISECONDS = 90000
+LIBRARY_CLOSE_WAIT_SECONDS = 10
+ENDNOTE_EXIT_WAIT_SECONDS = 30
+
+# Win32 job object: every bridge and every EndNote this server starts ends with the server.
+JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+WAIT_OBJECT_0 = 0
+WAIT_ABANDONED = 0x80
 
 # Win32 constants used by the ctypes process enumeration.
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -324,6 +376,14 @@ TOOLS: list[dict[str, Any]] = [
                 "output_path": {"type": "string", "description": "Absolute path for the rendered DOCX."},
                 "manifest_path": {"type": "string", "description": "Absolute path to a schema v1 JSON manifest."},
                 "overwrite": {"type": "boolean", "default": False},
+                "background": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": (
+                        "Queue the job and return its job_id at once; follow it with "
+                        "get_endnote_job_status. false waits for the result in this call."
+                    ),
+                },
             },
             "required": ["input_path", "output_path", "manifest_path"],
             "additionalProperties": False,
@@ -379,6 +439,14 @@ TOOLS: list[dict[str, Any]] = [
                 "input_path": {"type": "string", "description": "Absolute path to the DOCX to update."},
                 "output_path": {"type": "string", "description": "Absolute path for the updated DOCX."},
                 "overwrite": {"type": "boolean", "default": False},
+                "background": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": (
+                        "Queue the job and return its job_id at once; follow it with "
+                        "get_endnote_job_status. false waits for the result in this call."
+                    ),
+                },
             },
             "required": ["input_path"],
             "additionalProperties": False,
@@ -406,6 +474,14 @@ TOOLS: list[dict[str, Any]] = [
                 "output_path": {"type": "string", "description": "Absolute path for the restyled DOCX."},
                 "style": {"type": "string", "description": "Installed EndNote output style name, for example 'IEEE'."},
                 "overwrite": {"type": "boolean", "default": False},
+                "background": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": (
+                        "Queue the job and return its job_id at once; follow it with "
+                        "get_endnote_job_status. false waits for the result in this call."
+                    ),
+                },
             },
             "required": ["input_path", "style"],
             "additionalProperties": False,
@@ -527,6 +603,59 @@ TOOLS: list[dict[str, Any]] = [
             "readOnlyHint": False,
             "destructiveHint": True,
             "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": JOB_STATUS_TOOL,
+        "description": (
+            "Report a queued EndNote job: state (queued, waiting_for_lock, running, succeeded, "
+            "failed, cancelled), the tool result once it finished, notices it dismissed, and any "
+            "dialog that has stayed open, which a user may have to answer. Pass wait_seconds to "
+            "block until the job finishes or that many seconds pass. Without job_id it lists this "
+            "session's jobs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "The job_id a background call returned."},
+                "wait_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_STATUS_WAIT_SECONDS,
+                    "default": 0,
+                    "description": "Wait up to this many seconds for the job to finish.",
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "title": "Get EndNote Job Status",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": JOB_CANCEL_TOOL,
+        "description": (
+            "Cancel a queued or running EndNote job. A running job's bridge and hidden Word are "
+            "ended and the library the job opened is closed; no output file is written, because "
+            "the bridge saves atomically at the end."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string", "description": "The job to cancel."}},
+            "required": ["job_id"],
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "title": "Cancel EndNote Job",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
             "openWorldHint": False,
         },
     },
@@ -828,16 +957,21 @@ def _invoke_bridge(action: str, arguments: dict[str, Any], timeout: int | None =
             "error": f"Could not start the PowerShell bridge with {executable}: {exc}",
         }
 
-    if completed.stderr.strip():
-        _log(completed.stderr.strip())
-    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    return _parse_bridge_output(action, completed.returncode, completed.stdout, completed.stderr)
+
+
+def _parse_bridge_output(action: str, returncode: int, stdout: str, stderr: str) -> dict[str, Any]:
+    """Turn a finished bridge run into its result object: the last stdout line is the JSON."""
+    if stderr.strip():
+        _log(stderr.strip())
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
     if not lines:
         return _with_powershell_notice({
             "ok": False,
             "action": action,
-            "error": f"Bridge returned no JSON (exit {completed.returncode}).",
-            "stderr_tail": completed.stderr[-STDERR_EXCERPT_CHARACTERS:],
-        }, completed.stderr)
+            "error": f"Bridge returned no JSON (exit {returncode}).",
+            "stderr_tail": stderr[-STDERR_EXCERPT_CHARACTERS:],
+        }, stderr)
     try:
         result = json.loads(lines[-1])
     except json.JSONDecodeError as exc:
@@ -845,19 +979,630 @@ def _invoke_bridge(action: str, arguments: dict[str, Any], timeout: int | None =
             "ok": False,
             "action": action,
             "error": f"Bridge returned invalid JSON: {exc}",
-            "stdout": completed.stdout[-STDERR_EXCERPT_CHARACTERS:],
+            "stdout": stdout[-STDERR_EXCERPT_CHARACTERS:],
         }
     if not isinstance(result, dict):
         return {
             "ok": False,
             "action": action,
             "error": "Bridge returned a JSON value that is not an object.",
-            "stdout": completed.stdout[-STDERR_EXCERPT_CHARACTERS:],
+            "stdout": stdout[-STDERR_EXCERPT_CHARACTERS:],
         }
-    if completed.returncode and result.get("ok", True):
+    if returncode and result.get("ok", True):
         result["ok"] = False
-        result["error"] = f"Bridge exited with code {completed.returncode}."
+        result["error"] = f"Bridge exited with code {returncode}."
     return result
+
+
+# ---------------------------------------------------------------------------------------------
+# Jobs: one worker thread, one EndNote session per job, cleanup when the queue goes idle.
+# ---------------------------------------------------------------------------------------------
+
+
+class _JobError(Exception):
+    """A job failed before or around the bridge run; details go into the result."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.details = details or {}
+
+
+def _environment_integer(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        _log(f"{name}={raw!r} is not an integer; using {default}.")
+        return default
+    if value < 0:
+        _log(f"{name}={value} is negative; using {default}.")
+        return default
+    return value
+
+
+def _session_module() -> Any:
+    """endnote_session needs user32 and winreg, so it exists only on Windows."""
+    if os.name != "nt":
+        return None
+    directory = str(SCRIPT_DIRECTORY)
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
+    import endnote_session
+
+    return endnote_session
+
+
+_LIFETIME_JOB: int | None = None
+_LIFETIME_JOB_LOCK = threading.Lock()
+
+
+def _bind_to_server_lifetime(process: subprocess.Popen) -> None:
+    """Windows keeps a child alive when its parent dies. Every bridge and every EndNote this server
+    starts joins one kill-on-close job object, so even a hard kill of the server leaves none behind."""
+    global _LIFETIME_JOB
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimits), ("IoInfo", ctypes.c_ulonglong * 6),
+            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+    kernel32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+    kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    with _LIFETIME_JOB_LOCK:
+        if _LIFETIME_JOB is None:
+            job = kernel32.CreateJobObjectW(None, None)
+            limits = ExtendedLimits()
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not job or not kernel32.SetInformationJobObject(
+                job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)
+            ):
+                _log(f"kill-on-close job object unavailable: {ctypes.WinError(ctypes.get_last_error())}")
+                return
+            _LIFETIME_JOB = job  # held for the server's lifetime; the OS closes it on exit
+        if not kernel32.AssignProcessToJobObject(_LIFETIME_JOB, int(process._handle)):
+            _log(f"could not bind PID {process.pid} to the server's lifetime: {ctypes.WinError(ctypes.get_last_error())}")
+
+
+class _BridgeLock:
+    """Named mutex shared by every server in this Windows session. Only the worker thread owns it."""
+
+    def __init__(self) -> None:
+        self._handle = None
+        if os.name != "nt":
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.CreateMutexW.restype = wintypes.HANDLE
+        self._kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+        self._kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        self._kernel32.ReleaseMutex.argtypes = (wintypes.HANDLE,)
+        self._handle = self._kernel32.CreateMutexW(None, False, BRIDGE_MUTEX_NAME)
+        if not self._handle:
+            _log(f"could not open the bridge lock: {ctypes.WinError(ctypes.get_last_error())}")
+
+    def acquire(self, should_stop) -> bool:
+        if not self._handle:
+            return True
+        while True:
+            if self._kernel32.WaitForSingleObject(self._handle, LOCK_POLL_MILLISECONDS) in (WAIT_OBJECT_0, WAIT_ABANDONED):
+                return True
+            if should_stop():
+                return False
+
+    def release(self) -> None:
+        if self._handle:
+            self._kernel32.ReleaseMutex(self._handle)
+
+
+@dataclass
+class _Job:
+    id: str
+    tool: str
+    action: str
+    arguments: dict[str, Any]
+    created: float = field(default_factory=time.time)
+    state: str = "queued"
+    started: float | None = None
+    finished: float | None = None
+    result: dict[str, Any] | None = None
+    notices_dismissed: list[str] = field(default_factory=list)
+    attention: list[dict[str, Any]] = field(default_factory=list)
+    cancel_requested: bool = False
+    process: subprocess.Popen | None = None
+    word_pid: int | None = None
+
+
+@dataclass
+class _Session:
+    library: Path
+    process_id: int
+    window_preexisting: bool
+    recent_before: dict[str, str]
+
+
+def _timestamp(value: float | None) -> str | None:
+    return None if value is None else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value))
+
+
+def _job_library(job: _Job) -> Path | None:
+    """The library a job formats against: render's manifest library, or an explicit library_path."""
+    explicit = job.arguments.get("library_path")
+    candidate = str(explicit) if explicit else None
+    if candidate is None and job.action == "render":
+        try:
+            manifest = json.loads(Path(str(job.arguments.get("manifest_path", ""))).read_text(encoding="utf-8-sig"))
+            library = manifest.get("library") if isinstance(manifest, dict) else None
+            candidate = library.get("path") if isinstance(library, dict) else None
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None  # the bridge reports the unreadable manifest itself
+    if not candidate:
+        return None
+    path = Path(candidate)
+    return path if path.suffix.lower() == ".enl" and path.is_file() else None
+
+
+class _JobRunner:
+    def __init__(self) -> None:
+        self._condition = threading.Condition(threading.RLock())
+        self._jobs: dict[str, _Job] = {}
+        self._pending: queue.Queue[_Job | None] = queue.Queue()
+        self._worker: threading.Thread | None = None
+        self._stopping = False
+        # (PID, recent-library list before it started) of an EndNote this server started.
+        self._owned_endnote: tuple[int, dict[str, str]] | None = None
+
+    # -- public, called from the MCP thread ------------------------------------------------
+
+    def submit(self, tool: str, action: str, arguments: dict[str, Any]) -> _Job:
+        job = _Job(uuid.uuid4().hex[:12], tool, action, dict(arguments))
+        with self._condition:
+            self._jobs[job.id] = job
+            if self._worker is None:
+                self._worker = threading.Thread(target=self._work, name="endnote-jobs", daemon=True)
+                self._worker.start()
+        self._pending.put(job)
+        return job
+
+    def get(self, job_id: str) -> _Job | None:
+        with self._condition:
+            return self._jobs.get(job_id)
+
+    def wait(self, job: _Job, seconds: float | None) -> None:
+        with self._condition:
+            self._condition.wait_for(lambda: job.state in TERMINAL_JOB_STATES, timeout=seconds)
+
+    def cancel(self, job: _Job) -> None:
+        with self._condition:
+            if job.state in TERMINAL_JOB_STATES:
+                return
+            job.cancel_requested = True
+            if job.state == "queued":
+                self._finish(job, "cancelled", {"ok": False, "action": job.action, "error": "Cancelled before it started."})
+
+    def describe(self, job: _Job, include_result: bool = True) -> dict[str, Any]:
+        with self._condition:
+            data: dict[str, Any] = {
+                "job_id": job.id,
+                "tool": job.tool,
+                "action": job.action,
+                "state": job.state,
+                "created_at": _timestamp(job.created),
+                "started_at": _timestamp(job.started),
+                "finished_at": _timestamp(job.finished),
+                "notices_dismissed": list(job.notices_dismissed),
+                "attention": list(job.attention),
+            }
+            if job.state == "queued":
+                data["queue_position"] = 1 + sum(
+                    1 for other in self._jobs.values() if other.state == "queued" and other.created < job.created
+                )
+            if include_result and job.result is not None:
+                data["result"] = job.result
+            return data
+
+    def all_jobs(self) -> list[_Job]:
+        with self._condition:
+            return sorted(self._jobs.values(), key=lambda job: job.created)
+
+    def shutdown(self) -> None:
+        """stdin closed: cancel everything, then let the worker close what this server opened."""
+        with self._condition:
+            self._stopping = True
+            worker = self._worker
+            for job in self._jobs.values():
+                if job.state not in TERMINAL_JOB_STATES:
+                    self.cancel(job)
+        if worker is None:
+            return
+        self._pending.put(None)
+        worker.join(LIBRARY_CLOSE_WAIT_SECONDS + ENDNOTE_EXIT_WAIT_SECONDS)
+
+    # -- worker thread ----------------------------------------------------------------------
+
+    def _finish(self, job: _Job, state: str, result: dict[str, Any]) -> None:
+        with self._condition:
+            job.state = state
+            job.finished = time.time()
+            job.result = result
+            self._condition.notify_all()
+
+    def _set_state(self, job: _Job, state: str) -> None:
+        with self._condition:
+            job.state = state
+            if state == "running":
+                job.started = time.time()
+            self._condition.notify_all()
+
+    def _work(self) -> None:
+        lock = _BridgeLock()
+        while True:
+            idle = _environment_integer(IDLE_CLOSE_ENV_VARIABLE, DEFAULT_IDLE_CLOSE_SECONDS)
+            try:
+                job = self._pending.get(timeout=idle if self._owned_endnote else None)
+            except queue.Empty:
+                self._close_owned_endnote(lock)
+                continue
+            if job is None:
+                self._close_owned_endnote(lock)
+                return
+            if job.state in TERMINAL_JOB_STATES:
+                continue
+            try:
+                self._run(job, lock)
+            except Exception as exc:  # Worker boundary: one broken job must not stop the queue.
+                _log(traceback.format_exc())
+                self._finish(job, "failed", {"ok": False, "action": job.action, "error": f"{type(exc).__name__}: {exc}"})
+
+    def _run(self, job: _Job, lock: _BridgeLock) -> None:
+        self._set_state(job, "waiting_for_lock")
+        if not lock.acquire(lambda: job.cancel_requested or self._stopping):
+            self._finish(job, "cancelled", {
+                "ok": False, "action": job.action,
+                "error": "Cancelled while another EndNote job in this Windows session held the bridge lock.",
+            })
+            return
+        try:
+            self._set_state(job, "running")
+            if job.action == "import-ris":
+                # Creating a library needs EndNote fully closed, so an idle EndNote kept by this
+                # server must not refuse it. The named mutex is re-entrant for this thread.
+                self._close_owned_endnote(lock)
+            sessions = _session_module()
+            recent_before = sessions.recent_libraries() if sessions else {}
+            endnote_before = _process_pids(ENDNOTE_PROCESS_NAME)
+            session = None
+            try:
+                session = self._open_session(job)
+                result = self._execute(job)
+            except _JobError as exc:
+                result = {"ok": False, "action": job.action, "error": str(exc), **exc.details}
+            finally:
+                if session is not None:
+                    self._close_session(session, job)
+            self._adopt_new_endnote(endnote_before, recent_before)
+            if job.notices_dismissed:
+                result["notices_dismissed"] = list(job.notices_dismissed)
+            if job.attention and not result.get("ok"):
+                result["blocking_dialogs"] = list(job.attention)
+            if job.cancel_requested:
+                state = "cancelled"
+            else:
+                state = "succeeded" if result.get("ok") else "failed"
+            self._finish(job, state, result)
+        finally:
+            lock.release()
+
+    def _open_session(self, job: _Job) -> _Session | None:
+        """Open the job's library in EndNote, beside any library the user has open."""
+        sessions = _session_module()
+        library = _job_library(job)
+        if sessions is None or library is None:
+            return None
+        executable = sessions.endnote_executable()
+        if executable is None:
+            return None  # the bridge reports the missing installation itself
+        recent = sessions.recent_libraries()
+        running = _process_pids(ENDNOTE_PROCESS_NAME)
+        job.notices_dismissed.extend(sessions.dismiss_notices(running))
+        preexisting = bool(running) and sessions.library_window(running, library) is not None
+
+        def forward() -> None:
+            # Also for an open library: forwarding it makes it the one CWYW formats against.
+            _bind_to_server_lifetime(sessions.launch_endnote(executable, library, hidden=True))
+
+        forward()
+        timeout = _environment_integer(READY_TIMEOUT_ENV_VARIABLE, DEFAULT_READY_TIMEOUT_MILLISECONDS) / 1000
+        window, dismissed = sessions.wait_for_library(lambda: _process_pids(ENDNOTE_PROCESS_NAME), library, timeout, forward)
+        job.notices_dismissed.extend(dismissed)
+        if window is None:
+            dialogs = sessions.blocking_dialogs(_process_pids(ENDNOTE_PROCESS_NAME))
+            raise _JobError(
+                f"EndNote did not open {library} within {timeout:.0f} s. Raise {READY_TIMEOUT_ENV_VARIABLE} "
+                "for a very large library, or answer the dialog EndNote shows.",
+                {"blocking_dialogs": [{"title": item["title"], "buttons": item["buttons"]} for item in dialogs]},
+            )
+        if not running:
+            with self._condition:
+                self._owned_endnote = (window.process_id, recent)
+        return _Session(library, window.process_id, preexisting, recent)
+
+    def _close_session(self, session: _Session, job: _Job) -> None:
+        """Close the library this job opened; an EndNote this server started stays for the idle timer."""
+        sessions = _session_module()
+        owned = self._owned_endnote is not None and self._owned_endnote[0] == session.process_id
+        if not session.window_preexisting:
+            window = sessions.library_window({session.process_id}, session.library)
+            only_library = len(sessions.library_windows({session.process_id})) <= 1
+            if window is not None and not (owned and only_library):
+                sessions.close_window(window.handle)
+                deadline = time.monotonic() + LIBRARY_CLOSE_WAIT_SECONDS
+                while sessions.window_exists(window.handle) and time.monotonic() < deadline:
+                    job.notices_dismissed.extend(sessions.dismiss_notices({session.process_id}))
+                    time.sleep(sessions.POLL_SECONDS)
+                if sessions.window_exists(window.handle):
+                    _log(f"EndNote kept the library window of {session.library} open after WM_CLOSE.")
+        if not owned:
+            try:
+                sessions.restore_recent_libraries(session.recent_before)
+            except OSError as exc:
+                _log(f"could not restore EndNote's recent-library list: {exc}")
+
+    def _adopt_new_endnote(self, endnote_before: set[int], recent_before: dict[str, str]) -> None:
+        """An EndNote that CWYW or import-ris started during the job is closed by the idle timer too."""
+        if self._owned_endnote is not None:
+            return
+        new = _process_pids(ENDNOTE_PROCESS_NAME) - endnote_before
+        if len(new) == 1:
+            with self._condition:
+                self._owned_endnote = (new.pop(), recent_before)
+
+    def _close_owned_endnote(self, lock: _BridgeLock) -> None:
+        owned = self._owned_endnote
+        sessions = _session_module()
+        if owned is None or sessions is None:
+            return
+        process_id, recent = owned
+
+        def alive() -> bool:
+            return process_id in _process_pids(ENDNOTE_PROCESS_NAME)
+
+        def wait_for_exit(seconds: float) -> None:
+            deadline = time.monotonic() + seconds
+            while alive() and time.monotonic() < deadline:
+                sessions.dismiss_notices({process_id})
+                time.sleep(sessions.POLL_SECONDS)
+
+        lock.acquire(lambda: False)
+        try:
+            # Closing the last library usually ends EndNote; the frame is closed only when it does not.
+            for window in sessions.library_windows({process_id}):
+                sessions.close_window(window.handle)
+            wait_for_exit(LIBRARY_CLOSE_WAIT_SECONDS)
+            if alive():
+                for window in sessions.frame_windows({process_id}):
+                    sessions.close_window(window.handle)
+                wait_for_exit(ENDNOTE_EXIT_WAIT_SECONDS)
+            if alive():
+                # Measured after a Word was ended mid-CWYW (cancel or timeout): EndNote answers
+                # messages but ignores every close request for minutes. Only an EndNote this server
+                # started is ended this way; the user's own EndNote is never terminated.
+                if not _terminate_process_pid(process_id) and alive():
+                    _log(f"Could not end EndNote PID {process_id}, started by this server; retrying after the next idle period.")
+                    return
+                _log(f"Ended EndNote PID {process_id}, started by this server, which ignored every close request.")
+            else:
+                _log(f"Closed EndNote PID {process_id}, which this server had started.")
+            with self._condition:
+                self._owned_endnote = None
+            try:
+                sessions.restore_recent_libraries(recent)
+            except OSError as exc:
+                _log(f"could not restore EndNote's recent-library list: {exc}")
+        finally:
+            lock.release()
+
+    def _execute(self, job: _Job) -> dict[str, Any]:
+        """Run the bridge, watching for dialogs, cancellation and the timeout while it works."""
+        if not SCRIPT_PATH.is_file():
+            raise _JobError(f"Bridge script not found: {SCRIPT_PATH}")
+        try:
+            executable = _powershell_executable()
+        except RuntimeError as exc:
+            raise _JobError(str(exc)) from exc
+        command = _build_command(job.action, job.arguments, executable)
+        timeout = _timeout_seconds(job.action, job.arguments)
+        words_before = _process_pids(WORD_PROCESS_NAME)
+        try:
+            process = subprocess.Popen(
+                command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
+                env={**os.environ, PYTHON_ENV_VARIABLE: sys.executable},
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError as exc:
+            raise _JobError(f"Could not start the PowerShell bridge with {executable}: {exc}") from exc
+        _bind_to_server_lifetime(process)
+        job.process = process
+        stdout: list[str] = []
+        stderr: list[str] = []
+
+        def drain(stream, lines: list[str], watch_word: bool) -> None:
+            for line in stream:
+                lines.append(line)
+                if watch_word:
+                    word_pid = _extract_word_pid(line)
+                    if word_pid is not None:
+                        job.word_pid = word_pid
+
+        readers = [
+            threading.Thread(target=drain, args=(process.stdout, stdout, False), daemon=True),
+            threading.Thread(target=drain, args=(process.stderr, stderr, True), daemon=True),
+        ]
+        for reader in readers:
+            reader.start()
+        deadline = time.monotonic() + timeout
+        first_seen: dict[int, float] = {}
+        cancelled_dialogs: list[str] = []
+        pressed: set[int] = set()
+        outcome = None
+        while True:
+            try:
+                process.wait(timeout=JOB_POLL_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            if job.cancel_requested:
+                outcome = "cancelled"
+                break
+            if time.monotonic() >= deadline:
+                outcome = "timeout"
+                break
+            chooser = self._watch_dialogs(job, first_seen)
+            if chooser is not None and chooser["handle"] not in pressed and _session_module().press_cancel(chooser["handle"]):
+                _log(f"Pressed Cancel on the CWYW dialog '{chooser['title']}'.")
+                pressed.add(chooser["handle"])
+                cancelled_dialogs.append(chooser["title"])
+        if outcome is not None:
+            self._stop_bridge(job, words_before)
+        process.wait()
+        for reader in readers:
+            reader.join()
+        job.process = None
+        stderr_text = "".join(stderr)
+        if outcome == "cancelled":
+            return {"ok": False, "action": job.action, "error": "Cancelled while running; no output file was written.",
+                    "stderr_tail": stderr_text[-STDERR_EXCERPT_CHARACTERS:]}
+        if outcome == "timeout":
+            return _with_powershell_notice({
+                "ok": False,
+                "action": job.action,
+                "error": (
+                    f"EndNote/Word bridge timed out after {timeout} seconds. blocking_dialogs lists any "
+                    f"dialog that stayed open; see references/troubleshooting.md. Raise {TIMEOUT_ENV_VARIABLE} "
+                    "for very large libraries."
+                ),
+                "isolated_word_pid": job.word_pid,
+                "stderr_tail": stderr_text[-STDERR_EXCERPT_CHARACTERS:],
+            }, stderr_text)
+        result = _parse_bridge_output(job.action, process.returncode, "".join(stdout), stderr_text)
+        if cancelled_dialogs:
+            result["dialogs_cancelled"] = cancelled_dialogs
+            if not result.get("ok"):
+                result["bridge_error"] = result.get("error")
+                result["error"] = f"CWYW asked '{cancelled_dialogs[0]}'. {CANCELLED_DIALOG_ADVICE}"
+        return result
+
+    def _stop_bridge(self, job: _Job, words_before: set[int]) -> None:
+        """End the bridge tree and its hidden Word. Word comes from COM, not from the bridge, so its
+        PID is the bridge's WORD_PID marker; a PID merely seen meanwhile could be the user's Word."""
+        if job.process is not None:
+            _terminate_process_pid(job.process.pid)
+        word_pid = job.word_pid
+        if word_pid is None:
+            new_words = _process_pids(WORD_PROCESS_NAME) - words_before
+            word_pid = new_words.pop() if len(new_words) == 1 else None
+        if word_pid is not None:
+            _terminate_process_pid(word_pid)
+
+    def _watch_dialogs(self, job: _Job, first_seen: dict[int, float]) -> dict[str, Any] | None:
+        """Dismiss news notices, report lasting dialogs, and return a CWYW chooser to cancel."""
+        sessions = _session_module()
+        if sessions is None:
+            return None
+        endnote = _process_pids(ENDNOTE_PROCESS_NAME)
+        dismissed = sessions.dismiss_notices(endnote)
+        targets = set(endnote) | ({job.word_pid} if job.word_pid else set())
+        now = time.monotonic()
+        dialogs = sessions.blocking_dialogs(targets)
+        open_handles = {item["handle"] for item in dialogs}
+        for handle in list(first_seen):
+            if handle not in open_handles:
+                del first_seen[handle]
+        attention = []
+        for item in dialogs:
+            seen = first_seen.setdefault(item["handle"], now)
+            if now - seen >= DIALOG_REPORT_AFTER_SECONDS:
+                attention.append({
+                    "application": "Word" if item["process_id"] == job.word_pid else "EndNote",
+                    "title": item["title"],
+                    "buttons": item["buttons"],
+                    "open_seconds": round(now - seen),
+                })
+        chooser = next(
+            (item for item in dialogs if any(title in item["title"] for title in CANCELLED_DIALOG_TITLES)), None
+        )
+        with self._condition:
+            job.notices_dismissed.extend(dismissed)
+            job.attention = attention
+        return chooser
+
+
+_JOB_RUNNER = _JobRunner()
+
+
+def _job_status(arguments: dict[str, Any]) -> dict[str, Any]:
+    job_id = arguments.get("job_id")
+    if not job_id:
+        return {"ok": True, "action": "job-status",
+                "jobs": [_JOB_RUNNER.describe(job, include_result=False) for job in _JOB_RUNNER.all_jobs()]}
+    job = _JOB_RUNNER.get(str(job_id))
+    if job is None:
+        return {"ok": False, "action": "job-status",
+                "error": f"Unknown job_id '{job_id}'. Jobs live only as long as this MCP server."}
+    try:
+        wait_seconds = int(arguments.get("wait_seconds") or 0)
+    except (TypeError, ValueError):
+        wait_seconds = 0
+    wait_seconds = max(0, min(MAX_STATUS_WAIT_SECONDS, wait_seconds))
+    if wait_seconds:
+        _JOB_RUNNER.wait(job, wait_seconds)
+    return {"ok": True, "action": "job-status", "job": _JOB_RUNNER.describe(job)}
+
+
+def _job_cancel(arguments: dict[str, Any]) -> dict[str, Any]:
+    job = _JOB_RUNNER.get(str(_require(arguments, "job_id", JOB_CANCEL_TOOL)))
+    if job is None:
+        return {"ok": False, "action": "job-cancel", "error": f"Unknown job_id '{arguments.get('job_id')}'."}
+    _JOB_RUNNER.cancel(job)
+    return {"ok": True, "action": "job-cancel", "job": _JOB_RUNNER.describe(job, include_result=False)}
+
+
+def _call_bridge_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    action = BRIDGE_TOOL_ACTIONS[name]
+    if action not in QUEUED_ACTIONS:
+        return _invoke_bridge(action, arguments)
+    job = _JOB_RUNNER.submit(name, action, arguments)
+    if name in BACKGROUND_TOOLS and arguments.get("background", True):
+        return {
+            "ok": True,
+            "action": action,
+            "job_id": job.id,
+            "state": job.state,
+            "next": f"Call {JOB_STATUS_TOOL} with this job_id and wait_seconds until the state is terminal.",
+        }
+    _JOB_RUNNER.wait(job, None)
+    return job.result or {"ok": False, "action": action, "error": "The job finished without a result."}
 
 
 def _import_library_module() -> Any:
@@ -917,8 +1662,12 @@ def _invoke_library(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if name in BRIDGE_TOOL_ACTIONS:
-        result = _invoke_bridge(BRIDGE_TOOL_ACTIONS[name], arguments)
+    if name == JOB_STATUS_TOOL:
+        result = _job_status(arguments)
+    elif name == JOB_CANCEL_TOOL:
+        result = _job_cancel(arguments)
+    elif name in BRIDGE_TOOL_ACTIONS:
+        result = _call_bridge_tool(name, arguments)
     elif name in LIBRARY_TOOL_ACTIONS:
         result = _invoke_library(name, arguments)
     else:
@@ -987,7 +1736,11 @@ def _handle(message: dict[str, Any]) -> dict[str, Any] | None:
                     "precheck_endnote_manifest before rendering. Every cited record must carry a bare "
                     "DOI that resolves at doi.org. Use IEEE by default. Set display='author-year' only "
                     "when the author is a grammatical part of the sentence; use display='default' for "
-                    "claim support and merged citations. Render into a new file, then validate. Citations "
+                    "claim support and merged citations. Render into a new file, then validate. Render, "
+                    "update and set-style return a job_id at once; follow it with get_endnote_job_status "
+                    "and wait_seconds until the state is succeeded, failed or cancelled, and tell the user "
+                    "about any dialog listed under attention. Jobs run one at a time against the "
+                    "document's own library and close what they opened. Citations "
                     "must be CWYW-produced ADDIN EN.CITE fields with a traveling library and an ADDIN "
                     "EN.REFLIST bibliography; never type citation text by hand. Word and EndNote editing "
                     "runs silently. Library reads are read-only; explicit RIS import is performed by "
@@ -1017,6 +1770,14 @@ def main() -> int:
     # such as a Claude Code project, stays the base for relative paths.
     if Path.cwd().resolve() == PLUGIN_ROOT:
         os.chdir(tempfile.gettempdir())
+    try:
+        return _serve()
+    finally:
+        # The client closed the conversation: cancel jobs and close what this server opened.
+        _JOB_RUNNER.shutdown()
+
+
+def _serve() -> int:
     while True:
         message: dict[str, Any] | None = None
         try:

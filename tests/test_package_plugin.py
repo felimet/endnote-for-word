@@ -26,6 +26,7 @@ REQUIRED_FILES = (
     "scripts/endnote_cleanup.ps1",
     "scripts/run-mcp.ps1",
     "scripts/endnote_library.py",
+    "scripts/endnote_session.py",
     "scripts/mcp_server.py",
     "skills/endnote-for-word/SKILL.md",
 )
