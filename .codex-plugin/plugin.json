@@ -1,11 +1,13 @@
 {
   "name": "endnote-for-word",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Find DOI-verified research papers, import RIS, and create native IEEE EndNote CWYW citations and bibliographies in Microsoft Word.",
   "author": {
     "name": "Jia-Ming Zhou (Felimet)"
   },
   "license": "MIT",
+  "homepage": "https://github.com/felimet/endnote-for-word",
+  "repository": "https://github.com/felimet/endnote-for-word",
   "keywords": [
     "endnote",
     "cite-while-you-write",
@@ -25,7 +27,7 @@
     "ris"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./.codex-mcp.json",
   "interface": {
     "displayName": "EndNote for Word",
     "shortDescription": "Find papers and create native EndNote citations in Word.",
@@ -39,10 +41,9 @@
     "defaultPrompt": [
       "Find a DOI-verified paper on this topic and export it to EndNote-compatible RIS.",
       "Search my EndNote library and cite these references in this Word document.",
-      "Replace the citation markers in this DOCX with native EndNote CWYW fields.",
-      "Change this document's EndNote output style to IEEE and rebuild the bibliography.",
-      "Validate the EndNote citations and bibliography in this Word file."
+      "Change this document's EndNote output style to IEEE and rebuild the bibliography."
     ],
+    "websiteURL": "https://github.com/felimet/endnote-for-word",
     "brandColor": "#0078D4"
   }
 }

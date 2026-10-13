@@ -194,6 +194,27 @@ or an orphaned target `.Data` path:
 }
 ```
 
+To avoid passing the template on every call, register it once. Create an empty library in
+EndNote with File > New, close EndNote, then call `configure_endnote_defaults` with
+`empty_library_template_path`. The tool verifies the template is empty and stores it in
+`%APPDATA%\EndNoteForWordAgent\defaults.json`; a later call without the argument keeps it, and
+an explicit `empty_library_template_path` on `import_reference_file` still overrides it.
+
+When the user names no library for a DOCX, omit `library_path` and pass the DOCX instead. The
+target is then `<document stem>.enl` beside it, created from the template on first use and
+reused afterwards. A DOCX whose `ADDIN EN.` fields show it was already cited from another
+library is refused, so ask the user for that library. The check reads native fields only;
+temporary citation text left by `unformat` is not detected.
+
+```json
+{
+  "document_path": "C:\\Research\\Draft paper.docx",
+  "ris_path": "C:\\Research\\endnote-for-word-references.ris"
+}
+```
+
+Use the `library_path` that the result reports for every later search, precheck and manifest.
+
 Direct Export recognizes RIS and chooses its filter without driving the File > Import
 dialog, so no `SendKeys`, localized control labels, or modal UI automation is involved.
 If `imported_count` is zero, the tool reports `ok: false`; still search by DOI before retrying,
@@ -262,7 +283,7 @@ watchdog kills it.
 
 - Writing to `sdb.eni` directly, under any circumstance.
 - Driving the EndNote import dialog with synthetic keystrokes or UI automation. Direct Export needs no dialog.
-- Creating a blank library database schema from scratch. New targets are cloned only while EndNote is fully closed, from a verified empty EndNote library so the installed EndNote version owns the schema.
+- Creating a blank library database schema from scratch. New targets, including the library created beside a DOCX, are cloned only while EndNote is fully closed, from a verified empty EndNote library so the installed EndNote version owns the schema.
 - Repairing a library or emptying the trash.
 - Editing an existing reference. The same read-only rule applies: correcting a record is a
   human action in EndNote, after which the tool re-queries and continues.

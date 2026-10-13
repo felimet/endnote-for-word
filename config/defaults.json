@@ -3,6 +3,9 @@
   "style": {
     "default_output_style": "IEEE"
   },
+  "library": {
+    "empty_template_path": null
+  },
   "temporary_citation": {
     "open": "{",
     "close": "}",

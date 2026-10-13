@@ -4,6 +4,48 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-10-14
+
+### Added
+
+- A DOCX without a named library gets one beside it. `import-ris` (`import_reference_file`)
+  accepts the DOCX as `-InputPath` (`document_path`) instead of `-LibraryPath`, targets
+  `<document stem>.enl` in the same folder, creates it on first use and reuses it afterwards.
+  A DOCX that already carries `ADDIN EN.` fields is refused, because its citations belong to an
+  existing library.
+- `configure-defaults -EmptyLibraryTemplatePath` (`configure_endnote_defaults`
+  `empty_library_template_path`) registers a zero-record library once. A missing import target is
+  cloned from it when no template is passed, and re-running `configure-defaults` keeps it.
+  `config/defaults.json` gains `library.empty_template_path`.
+- Plugin marketplaces for both clients, so `claude plugin marketplace add felimet/endnote-for-word`
+  and `codex plugin marketplace add felimet/endnote-for-word` install the skill and the MCP
+  server together, and the clients' update commands upgrade them.
+- `SECURITY.md` with private vulnerability reporting, Dependabot updates for GitHub Actions, and a
+  plugin security scan workflow pinned to `hashgraph-online/ai-plugin-scanner-action` v1.2.786.
+
+### Changed
+
+- `import_reference_file` no longer requires `library_path`; it requires `ris_path` plus either
+  `library_path` or `document_path`.
+- Every GitHub Action in CI is pinned to a full commit SHA.
+- `requirements.txt` is removed. It declared no package, because the Python side uses only the
+  standard library.
+- Both plugin manifests declare `homepage` and `repository`; the Codex manifest keeps three
+  default prompts, the number Codex shows.
+
+### Fixed
+
+- The MCP server never started as a Codex plugin. Codex reads `.codex-plugin/plugin.json` as a
+  legacy manifest: it expands no `${PLUGIN_ROOT}`, exports no plugin-root variable, and starts the
+  server in the session folder, so the shared `.mcp.json` launcher looked for `run-mcp.ps1` in the
+  user's project. The Codex manifest now points at `.codex-mcp.json`, which runs
+  `python scripts/mcp_server.py` with `cwd` set to the installed plugin. The server then leaves that
+  folder, because Windows cannot replace a folder a process works in; started anywhere else it
+  stays, so relative paths keep their base under Claude Code.
+- Codex passes only a whitelist of environment variables, which drops `COMMONPROGRAMFILES*`, `OS`
+  and every `ENDNOTE_*` setting, so the probe could not find the CWYW template. `.codex-mcp.json`
+  forwards them by name and sets a 1860 s tool limit above the server's 1800 s render watchdog.
+
 ## [1.3.0] - 2026-10-13
 
 ### Added
@@ -69,5 +111,6 @@ All notable changes to this project are documented in this file. The format foll
 
 State of `main` when this changelog was started.
 
+[1.4.0]: https://github.com/felimet/endnote-for-word/releases/tag/v1.4.0
 [1.3.0]: https://github.com/felimet/endnote-for-word/releases/tag/v1.3.0
 [1.2.0]: https://github.com/felimet/endnote-for-word/tree/69a5bb2

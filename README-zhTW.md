@@ -6,7 +6,7 @@ EndNote for Word 是 Microsoft Word 的 AI 引用管理工具包，提供 Claude
 
 ## 本工具做什麼
 
-- 引導 AI Agent 尋找同儕審查論文、核對 metadata 與 DOI、匯出 EndNote 相容 RIS，再透過 EndNote Direct Export 匯入；目標 library 尚不存在時，先完全關閉 EndNote，再由確認為空的 library 模板建立。
+- 引導 AI Agent 尋找同儕審查論文、核對 metadata 與 DOI、匯出 EndNote 相容 RIS，再透過 EndNote Direct Export 匯入；目標 library 尚不存在時，先完全關閉 EndNote，再由確認為空的 library 模板建立；DOCX 尚無 EndNote 引用且未指定 library 時，於 DOCX 旁建立 `<文件主檔名>.enl`。
 - 將 DOCX 中的 `{{CITE:id}}` 標記換成真正的 CWYW 引用：每一筆引用都是帶有 EndNote traveling library 的 `ADDIN EN.CITE` 欄位，參考文獻清單則是 `ADDIN EN.REFLIST` 欄位。
 - 不手打引用文字、不在 OOXML 中偽造欄位碼，也不以純文字清單假冒參考文獻清單。
 - 以唯讀快照讀取 `.enl` 書目庫，讓 Agent 在開啟 Word 前搜尋文獻並確認紀錄編號；RIS 匯入是唯一會寫入 library 的動作，且寫入完全由 EndNote 執行。
@@ -59,7 +59,7 @@ pwsh.exe -NoProfile -ExecutionPolicy Bypass -File scripts/endnote-word.ps1 -Acti
 從 https://github.com/felimet/endnote-for-word 安裝或升級 EndNote for Word toolkit。偵測我目前可用的終端機，並使用 PowerShell 7、Windows PowerShell 5.1、Windows 上的 Bash，包括 Git Bash，或 CMD；有 pwsh.exe 時優先使用，否則退回 powershell.exe。在 WSL Bash 中呼叫 Windows 側執行檔，不使用 Linux pwsh。兩者皆不存在時，停止執行並提示我依 https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows 安裝 PowerShell。確認 Microsoft Word 桌面版，以及安裝了 Cite While You Write 增益集的桌面版 EndNote 均可使用；安裝可攜式 skill、註冊本機 stdio MCP server、執行 probe 與 repository 測試、保留既有 Agent 設定，並列出所有異動檔案。probe 未回報 cwyw_macro_callable 為 true，或 validation 未回傳 ok: true 時，不得宣稱完成。
 ```
 
-若尚無目標 library，依[快速測試 Prompt](#快速測試-prompt)先完全關閉 EndNote，再提供一個可供複製的空白 `.enl` 模板；若已有 library，直接提供 DOCX 與目標 `.enl` 路徑。你可以直接告訴 Agent 偏好的 EndNote Output Style，例如 `IEEE` 或 `APA 7th`（APA 7）；未指定時使用 IEEE。Agent 在編輯 Word 前必須確認該樣式已安裝，且不得擅自改用其他樣式。
+若尚無目標 library，依[快速測試 Prompt](#快速測試-prompt)先完全關閉 EndNote，再提供一個可供複製的空白 `.enl` 模板。請 Agent 以 `configure_endnote_defaults` 登錄一次；之後尚無 EndNote 引用的 DOCX 不必指定 library，會自動在 DOCX 旁建立 `<文件主檔名>.enl`。若已有 library，直接提供 DOCX 與目標 `.enl` 路徑。你可以直接告訴 Agent 偏好的 EndNote Output Style，例如 `IEEE` 或 `APA 7th`（APA 7）；未指定時使用 IEEE。Agent 在編輯 Word 前必須確認該樣式已安裝，且不得擅自改用其他樣式。
 
 各平台 skill 位置與 MCP 設定見[安裝矩陣](skills/endnote-for-word/references/installation-matrix.md)。
 
@@ -69,25 +69,43 @@ pwsh.exe -NoProfile -ExecutionPolicy Bypass -File scripts/endnote-word.ps1 -Acti
 
 ### Codex
 
-將 `skills/endnote-for-word` 複製至 `%USERPROFILE%\.codex\skills\endnote-for-word` 或 `%USERPROFILE%\.agents\skills\endnote-for-word`，再註冊 MCP server：
+由本 repository 的 marketplace 安裝 plugin。Plugin 同時提供 skill 與 MCP server，從安裝資料夾啟動 server，將工具時限設為 1860 秒（高於 server 自身 1800 秒的 render watchdog），並轉傳 `ENDNOTE_*` 設定與 CWYW 範本搜尋所需的 Common Files 變數：
+
+```console
+codex plugin marketplace add felimet/endnote-for-word
+codex plugin add endnote-for-word@endnote-for-word
+```
+
+升級時執行 `codex plugin marketplace upgrade endnote-for-word`，再執行一次 `codex plugin add`。安裝或升級後重新啟動 Codex。
+
+若改為手動註冊，將 `skills/endnote-for-word` 複製至 `%USERPROFILE%\.codex\skills\endnote-for-word` 或 `%USERPROFILE%\.agents\skills\endnote-for-word`，再註冊 MCP server：
 
 ```console
 codex mcp add endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 codex mcp get endnote-for-word
 ```
 
-Release 亦包含 `.codex-plugin/plugin.json`、`.codex-mcp.json` 與 `dist/endnote-for-word-plugin.zip`，供支援 plugin 的部署流程使用。
+Plugin 與手動註冊擇一使用：以 `codex mcp add` 註冊的同名 server 會蓋過 plugin 提供的 server。
 
 ### Claude Code
 
-將 `skills/endnote-for-word` 複製至 `%USERPROFILE%\.claude\skills\endnote-for-word`，再註冊 MCP server：
+由本 repository 的 marketplace 安裝 plugin：
+
+```console
+claude plugin marketplace add felimet/endnote-for-word
+claude plugin install endnote-for-word@endnote-for-word
+```
+
+升級時執行 `claude plugin marketplace update endnote-for-word` 與 `claude plugin update endnote-for-word@endnote-for-word`。
+
+若改為手動註冊，將 `skills/endnote-for-word` 複製至 `%USERPROFILE%\.claude\skills\endnote-for-word`，再註冊 MCP server：
 
 ```console
 claude mcp add --scope user endnote-for-word -- powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "<REPO_ROOT>\scripts\run-mcp.ps1"
 claude mcp get endnote-for-word
 ```
 
-Release 亦包含 `.claude-plugin/plugin.json`、`.mcp.json` 與合併 plugin 套件。安裝後重新啟動 Claude Code。
+Plugin 與手動註冊擇一使用，否則 Claude Code 會同時載入兩個 server 與兩份 skill。安裝或升級後重新啟動 Claude Code。
 
 ### Claude Desktop
 
@@ -232,7 +250,7 @@ Bridge 會保留來源檔，透過同層暫存 DOCX 完成儲存；除非明確�
 |---|---|
 | `skills/endnote-for-word/` | 跨 Agent skill、參考資料及 launcher |
 | `scripts/` | Word 與 EndNote automation bridge、書目庫讀取器、MCP server 及封裝程式 |
-| `config/defaults.json` | 預設輸出樣式、暫時引用分隔符號與驗證閘門 |
+| `config/defaults.json` | 預設輸出樣式、已登錄的空白 library 模板、暫時引用分隔符號與驗證閘門 |
 | `examples/` | 範例 manifest |
 | `tests/` | 靜態、MCP 協定、離線結構、書目庫及即時整合測試 |
 | `evals/` | 評測案例 |

@@ -25,7 +25,7 @@ BRIDGE = ROOT / "scripts" / "endnote-word.ps1"
 POWERSHELL_ENV_VARIABLE = "ENDNOTE_WORD_POWERSHELL"
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "endnote-for-word"
-SERVER_VERSION = "1.3.0"
+SERVER_VERSION = "1.4.0"
 PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5
 
 STUB_RESULT = {"ok": True, "action": "stub", "checks": {"stub_bridge": True}}
@@ -212,8 +212,13 @@ class McpProtocolTests(unittest.TestCase):
     def test_ris_import_targets_an_explicit_library_and_file(self) -> None:
         tools = {tool["name"]: tool for tool in self.list_tools()}
         schema = tools["import_reference_file"]["inputSchema"]
-        self.assertEqual(schema["required"], ["library_path", "ris_path"])
+        # library_path may be omitted in favour of document_path's library.
+        self.assertEqual(schema["required"], ["ris_path"])
+        self.assertIn("library_path", schema["properties"])
+        self.assertIn("document_path", schema["properties"])
         self.assertIn("empty_library_template_path", schema["properties"])
+        configure = tools["configure_endnote_defaults"]["inputSchema"]
+        self.assertIn("empty_library_template_path", configure["properties"])
         annotations = tools["import_reference_file"]["annotations"]
         self.assertTrue(annotations["destructiveHint"])
         self.assertFalse(annotations["idempotentHint"])
@@ -236,6 +241,13 @@ class McpProtocolTests(unittest.TestCase):
             command[command.index("-EmptyLibraryTemplatePath") + 1],
             r"C:\Research\Empty.enl",
         )
+        derived = server._build_command(
+            "import-ris",
+            {"document_path": r"C:\Research\paper.docx", "ris_path": r"C:\Research\references.ris"},
+            "pwsh.exe",
+        )
+        self.assertNotIn("-LibraryPath", derived)
+        self.assertEqual(derived[derived.index("-InputPath") + 1], r"C:\Research\paper.docx")
 
     def test_default_render_timeout_scales_for_large_manifests(self) -> None:
         server = load_server_module()
@@ -348,6 +360,38 @@ class McpProtocolTests(unittest.TestCase):
         result = response["result"]
         self.assertFalse(result["isError"], result)
         self.assertEqual(result["structuredContent"], STUB_RESULT)
+
+
+@unittest.skipUnless(os.name == "nt", "Only Windows refuses to rename a process's working folder.")
+class ServerWorkingFolderTests(unittest.TestCase):
+    """Codex starts the server in the installed plugin folder, which an update must replace."""
+
+    def rename_while_serving(self, folder: Path, server: Path) -> None:
+        process = subprocess.Popen(
+            [sys.executable, str(server)], cwd=folder, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+        )
+        try:
+            process.stdin.write('{"jsonrpc":"2.0","id":1,"method":"ping"}\n')
+            process.stdin.flush()
+            self.assertEqual(json.loads(process.stdout.readline())["id"], 1)
+            folder.rename(folder.with_name(folder.name + "-renamed"))
+        finally:
+            terminate(process)
+
+    def test_server_leaves_the_plugin_folder_it_was_started_in(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            plugin = Path(scratch) / "plugin"
+            (plugin / "scripts").mkdir(parents=True)
+            shutil.copy2(SERVER, plugin / "scripts" / SERVER.name)
+            self.rename_while_serving(plugin, plugin / "scripts" / SERVER.name)
+
+    def test_server_keeps_any_other_folder_as_the_base_for_relative_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            project = Path(scratch) / "project"
+            project.mkdir()
+            with self.assertRaises(PermissionError):
+                self.rename_while_serving(project, SERVER)
 
 
 class PluginLauncherTests(unittest.TestCase):

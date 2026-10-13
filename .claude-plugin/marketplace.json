@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "endnote-for-word",
+  "description": "EndNote for Word: DOI-verified references and native EndNote Cite While You Write citations in Microsoft Word.",
+  "owner": {
+    "name": "Jia-Ming Zhou (Felimet)",
+    "url": "https://github.com/felimet"
+  },
+  "plugins": [
+    {
+      "name": "endnote-for-word",
+      "description": "Find DOI-verified research papers, import RIS, and create native IEEE EndNote CWYW citations and bibliographies in Microsoft Word.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

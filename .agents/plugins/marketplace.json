@@ -1,0 +1,20 @@
+{
+  "name": "endnote-for-word",
+  "interface": {
+    "displayName": "EndNote for Word"
+  },
+  "plugins": [
+    {
+      "name": "endnote-for-word",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
