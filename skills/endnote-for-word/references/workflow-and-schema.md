@@ -276,6 +276,12 @@ pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File script
 # With EndNote fully closed, create a new target by cloning a zero-record library pair, then import the RIS.
 pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action import-ris -LibraryPath $newLibraryEnl -RisPath $risFile -EmptyLibraryTemplatePath $emptyLibraryEnl
 
+# Register that zero-record library once, so a missing target is cloned from it without -EmptyLibraryTemplatePath.
+pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action configure-defaults -EmptyLibraryTemplatePath $emptyLibraryEnl
+
+# No library named: import into <document stem>.enl beside the DOCX, created from the registered template if missing.
+pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action import-ris -InputPath $inputDocx -RisPath $risFile
+
 # Render. Library and style come from the manifest.
 pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\endnote-word.ps1 -Action render -InputPath $inputDocx -OutputPath $outputDocx -ManifestPath $manifestJson
 

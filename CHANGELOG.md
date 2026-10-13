@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A DOCX without a named library gets one beside it. `import-ris` (`import_reference_file`)
+  accepts the DOCX as `-InputPath` (`document_path`) instead of `-LibraryPath`, targets
+  `<document stem>.enl` in the same folder, creates it on first use and reuses it afterwards.
+  A DOCX that already carries `ADDIN EN.` fields is refused, because its citations belong to an
+  existing library.
+- `configure-defaults -EmptyLibraryTemplatePath` (`configure_endnote_defaults`
+  `empty_library_template_path`) registers a zero-record library once. A missing import target is
+  cloned from it when no template is passed, and re-running `configure-defaults` keeps it.
+  `config/defaults.json` gains `library.empty_template_path`.
+
+### Changed
+
+- `import_reference_file` no longer requires `library_path`; it requires `ris_path` plus either
+  `library_path` or `document_path`.
+
 ## [1.3.0] - 2026-10-13
 
 ### Added
@@ -69,5 +88,6 @@ All notable changes to this project are documented in this file. The format foll
 
 State of `main` when this changelog was started.
 
+[Unreleased]: https://github.com/felimet/endnote-for-word/compare/v1.3.0...HEAD
 [1.3.0]: https://github.com/felimet/endnote-for-word/releases/tag/v1.3.0
 [1.2.0]: https://github.com/felimet/endnote-for-word/tree/69a5bb2

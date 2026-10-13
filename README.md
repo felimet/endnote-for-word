@@ -6,7 +6,7 @@ EndNote for Word is an installable AI citation-management toolkit for Microsoft 
 
 ## What this tool does
 
-- Guides AI Agents to find peer-reviewed papers, verify metadata and DOI, export EndNote-compatible RIS, and import it through EndNote Direct Export. With EndNote fully closed, a missing target library can be created from a verified empty library template.
+- Guides AI Agents to find peer-reviewed papers, verify metadata and DOI, export EndNote-compatible RIS, and import it through EndNote Direct Export. With EndNote fully closed, a missing target library can be created from a verified empty library template, and a DOCX with no EndNote citations and no named library gets `<document stem>.enl` beside it.
 - Replaces `{{CITE:id}}` markers in a DOCX with real CWYW citations, so every citation becomes an `ADDIN EN.CITE` field carrying an EndNote traveling library, and the bibliography becomes an `ADDIN EN.REFLIST` field.
 - Never types citation text, never fabricates field codes in OOXML, and never passes off a plain-text reference list as a real bibliography.
 - Reads your `.enl` library through a read-only snapshot so an agent can search for references and confirm every record number before Word is ever opened. RIS import is the sole library-writing action and EndNote itself performs it.
@@ -59,7 +59,7 @@ If you want to use EndNote for Word in Claude Code, Claude Desktop, Codex, or Ch
 Install or upgrade the EndNote for Word toolkit from https://github.com/felimet/endnote-for-word. Detect my available terminal and use PowerShell 7, Windows PowerShell 5.1, Bash on Windows including Git Bash, or CMD; prefer pwsh.exe when it exists and fall back to powershell.exe. From WSL Bash, invoke the Windows-side executable rather than Linux pwsh. If neither is available, stop and tell me to install PowerShell using https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows. Verify Microsoft Word desktop plus desktop EndNote with the Cite While You Write add-in, install the portable skill, register the local stdio MCP server, run the probe and the repository tests, preserve existing agent configuration, and report every changed file. Do not claim success unless the probe reports cwyw_macro_callable true and validation returns ok: true.
 ```
 
-If you have no target library yet, fully close EndNote and provide an empty `.enl` library that the Agent may clone as a template, as shown in the [quick test prompt](#quick-test-prompt). Otherwise, provide the DOCX and target `.enl` paths directly. Tell the Agent your preferred EndNote output style, for example `IEEE` or `APA 7th` (`APA 7`). If you omit it, IEEE is used. The Agent must confirm that the style is installed before editing Word and must not silently substitute another style.
+If you have no target library yet, fully close EndNote and provide an empty `.enl` library that the Agent may clone as a template, as shown in the [quick test prompt](#quick-test-prompt). Ask the Agent to register it with `configure_endnote_defaults` once; afterwards a DOCX without EndNote citations needs no library path, because its library is created as `<document stem>.enl` beside it. Otherwise, provide the DOCX and target `.enl` paths directly. Tell the Agent your preferred EndNote output style, for example `IEEE` or `APA 7th` (`APA 7`). If you omit it, IEEE is used. The Agent must confirm that the style is installed before editing Word and must not silently substitute another style.
 
 Platform-specific skill locations and MCP configuration are documented in the [installation matrix](skills/endnote-for-word/references/installation-matrix.md).
 
@@ -232,7 +232,7 @@ Use the available scholarly-search or web tools to find one highly relevant peer
 |---|---|
 | `skills/endnote-for-word/` | Cross-agent skill, references, and launcher |
 | `scripts/` | Word and EndNote automation bridge, library reader, MCP server, and packager |
-| `config/defaults.json` | Default output style, temporary citation delimiters, and validation gates |
+| `config/defaults.json` | Default output style, registered empty library template, temporary citation delimiters, and validation gates |
 | `examples/` | Reference manifest |
 | `tests/` | Static, MCP protocol, offline structure, library, and live integration checks |
 | `evals/` | Evaluation cases |

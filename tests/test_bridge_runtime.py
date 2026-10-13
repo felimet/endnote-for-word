@@ -2,12 +2,15 @@
 
 Invoke-HiddenProcess is lifted out of the bridge through the PowerShell AST and run against a
 Python child. The UNC test drives -Action import-ris, which rejects a non-.ris file before
-EndNote is ever looked up, and echoes the resolved path in its error.
+EndNote is ever looked up, and echoes the resolved path in its error. The library tests use
+synthetic libraries and a per-test %APPDATA%, so the user's registered defaults are never
+read or written.
 """
 
 from __future__ import annotations
 
 import ctypes
+import glob
 import json
 import os
 import shutil
@@ -17,8 +20,26 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+TESTS_DIRECTORY = Path(__file__).resolve().parent
+if str(TESTS_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIRECTORY))
+
+from test_endnote_library import FIXTURE_RIS, build_synthetic_library  # noqa: E402
+from test_offline_structure import (  # noqa: E402
+    field_xml,
+    paragraph_xml,
+    text_run_xml,
+    write_minimal_docx,
+)
+
+ROOT = TESTS_DIRECTORY.parent
 BRIDGE = ROOT / "scripts" / "endnote-word.ps1"
+PYTHON_ENV_VARIABLE = "ENDNOTE_WORD_PYTHON"
+NO_ENDNOTE_ERROR = (
+    "EndNote is not installed or could not be discovered, so RIS cannot be imported through "
+    "EndNote Direct Export."
+)
+ENDNOTE_INSTALL_GLOBS = ("EndNote*\\EndNote.exe",)
 
 POWERSHELL_HOSTS = ("powershell.exe", "pwsh.exe")
 CHILD_TIMEOUT_SECONDS = 60
@@ -43,7 +64,7 @@ def available_hosts() -> list[str]:
     return [path for path in (shutil.which(name) for name in POWERSHELL_HOSTS) if path]
 
 
-def run_host(host: str, arguments: list[str]) -> subprocess.CompletedProcess:
+def run_host(host: str, arguments: list[str], environment: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [host, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", *arguments],
         stdin=subprocess.DEVNULL,
@@ -54,7 +75,7 @@ def run_host(host: str, arguments: list[str]) -> subprocess.CompletedProcess:
         timeout=CHILD_TIMEOUT_SECONDS,
         check=False,
         # Never let a test start the real PowerShell 7 auto-install on a machine without pwsh.
-        env={**os.environ, "ENDNOTE_WORD_AUTO_INSTALL_PWSH": "0"},
+        env={**os.environ, **(environment or {}), "ENDNOTE_WORD_AUTO_INSTALL_PWSH": "0"},
     )
 
 
@@ -159,6 +180,113 @@ class BridgeRuntimeTests(unittest.TestCase):
                 result = last_json_line(completed)
                 self.assertFalse(result["ok"])
                 self.assertTrue(result["error"].startswith("unformat is destructive"), result["error"])
+
+
+class DocumentLibraryTests(unittest.TestCase):
+    """configure-defaults template registration and import-ris without LibraryPath."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.hosts = available_hosts()
+        if not cls.hosts:
+            raise unittest.SkipTest("No Windows PowerShell or PowerShell 7 host on PATH.")
+        cls._directory = tempfile.TemporaryDirectory(prefix="endnote-doclib-")
+        cls.workspace = Path(cls._directory.name)
+        cls.empty_template = build_synthetic_library(cls.workspace / "template", "Empty", records=())
+        cls.populated_library = build_synthetic_library(cls.workspace / "populated", "Populated")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._directory.cleanup()
+
+    def run_bridge(self, host: str, name: str, *arguments: str) -> dict:
+        # A fresh %APPDATA% per host and test isolates the registered defaults.
+        appdata = self.workspace / "appdata" / f"{name}-{Path(host).stem}"
+        appdata.mkdir(parents=True, exist_ok=True)
+        environment = {"APPDATA": str(appdata), PYTHON_ENV_VARIABLE: sys.executable}
+        return last_json_line(run_host(host, ["-File", str(BRIDGE), *arguments], environment))
+
+    def plain_document(self, name: str) -> Path:
+        return write_minimal_docx(self.workspace / name, paragraph_xml(text_run_xml("No citations yet.")))
+
+    def test_configure_defaults_registers_and_keeps_an_empty_library_template(self) -> None:
+        for host in self.hosts:
+            with self.subTest(host=Path(host).name):
+                registered = self.run_bridge(
+                    host, "keep", "-Action", "configure-defaults",
+                    "-EmptyLibraryTemplatePath", str(self.empty_template),
+                )
+                self.assertTrue(registered["ok"], registered)
+                self.assertEqual(registered["defaults"]["library"]["empty_template_path"], str(self.empty_template))
+                kept = self.run_bridge(host, "keep", "-Action", "configure-defaults")
+                self.assertTrue(kept["ok"], kept)
+                self.assertEqual(kept["defaults"]["library"]["empty_template_path"], str(self.empty_template))
+
+    def test_configure_defaults_rejects_a_template_that_holds_references(self) -> None:
+        for host in self.hosts:
+            with self.subTest(host=Path(host).name):
+                result = self.run_bridge(
+                    host, "reject", "-Action", "configure-defaults",
+                    "-EmptyLibraryTemplatePath", str(self.populated_library),
+                )
+                self.assertFalse(result["ok"])
+                self.assertTrue(
+                    result["error"].startswith("The empty library template must contain zero stored references"),
+                    result["error"],
+                )
+
+    def test_import_without_a_library_targets_the_library_beside_the_document(self) -> None:
+        document = self.plain_document("draft paper.docx")
+        expected = self.workspace / "draft paper.enl"
+        for host in self.hosts:
+            with self.subTest(host=Path(host).name):
+                result = self.run_bridge(
+                    host, "derive", "-Action", "import-ris",
+                    "-InputPath", str(document), "-RisPath", str(FIXTURE_RIS),
+                )
+                self.assertFalse(result["ok"])
+                self.assertTrue(
+                    result["error"].startswith(f"No EndNote library exists at {expected}."), result["error"]
+                )
+
+    def test_import_refuses_to_create_a_library_for_a_document_that_already_cites(self) -> None:
+        # The split code is only recognisable once its w:instrText runs are joined.
+        citation = field_xml(" ADDIN EN.CITE <EndNote><Cite><RecNum>1</RecNum></Cite></EndNote> ", "[1]", split_code=True)
+        document = write_minimal_docx(self.workspace / "cited.docx", paragraph_xml(citation))
+        for host in self.hosts:
+            with self.subTest(host=Path(host).name):
+                result = self.run_bridge(
+                    host, "refuse", "-Action", "import-ris",
+                    "-InputPath", str(document), "-RisPath", str(FIXTURE_RIS),
+                )
+                self.assertFalse(result["ok"])
+                self.assertTrue(result["error"].startswith("InputPath already carries EndNote fields"), result["error"])
+                self.assertFalse((self.workspace / "cited.enl").exists())
+
+    def test_import_creates_the_document_library_from_the_registered_template(self) -> None:
+        # Past the copy, import-ris opens EndNote, so this runs only on a CI runner without it.
+        program_files = [os.environ.get(name) for name in ("ProgramFiles", "ProgramFiles(x86)")]
+        installed = any(
+            glob.glob(os.path.join(root, pattern)) for root in program_files if root for pattern in ENDNOTE_INSTALL_GLOBS
+        )
+        if os.environ.get("GITHUB_ACTIONS") != "true" or installed:
+            self.skipTest("Needs a machine without EndNote, so the import stops right after the library copy.")
+        for host in self.hosts:
+            with self.subTest(host=Path(host).name):
+                document = self.plain_document(f"new paper {Path(host).stem}.docx")
+                library = document.with_suffix(".enl")
+                registered = self.run_bridge(
+                    host, "create", "-Action", "configure-defaults",
+                    "-EmptyLibraryTemplatePath", str(self.empty_template),
+                )
+                self.assertTrue(registered["ok"], registered)
+                result = self.run_bridge(
+                    host, "create", "-Action", "import-ris",
+                    "-InputPath", str(document), "-RisPath", str(FIXTURE_RIS),
+                )
+                self.assertEqual(result["error"], NO_ENDNOTE_ERROR)
+                self.assertTrue(library.is_file())
+                self.assertTrue((library.with_suffix(".Data") / "sdb" / "sdb.eni").is_file())
 
 
 if __name__ == "__main__":

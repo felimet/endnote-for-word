@@ -19,6 +19,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Sequence
 from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -210,7 +211,9 @@ def _no_op_collation(left: str, right: str) -> int:
     return (left > right) - (left < right)
 
 
-def build_synthetic_library(directory: Path, name: str = "FixtureLibrary") -> Path:
+def build_synthetic_library(
+    directory: Path, name: str = "FixtureLibrary", records: Sequence[dict] = FIXTURE_RECORDS
+) -> Path:
     """Create ``<name>.enl`` plus ``<name>.Data/sdb/sdb.eni`` and return the .enl path."""
     enl_path = directory / f"{name}.enl"
     data_directory = directory / f"{name}.Data" / "sdb"
@@ -224,7 +227,7 @@ def build_synthetic_library(directory: Path, name: str = "FixtureLibrary") -> Pa
         connection.create_collation("ENCIN_zh_TW", _no_op_collation)
         connection.execute(f"CREATE TABLE refs ({REFS_COLUMNS})")
         columns = [row[1] for row in connection.execute("PRAGMA table_info(refs)")]
-        for record in FIXTURE_RECORDS:
+        for record in records:
             values = [record.get(column) for column in columns]
             placeholders = ", ".join("?" for _ in columns)
             connection.execute(

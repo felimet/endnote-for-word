@@ -153,6 +153,7 @@ $script:EndNoteStylesFolderName = 'Styles'
 $script:EndNoteStyleExtension = '.ens'
 $script:EndNoteStyleFilter = '*.ens'
 $script:RisExtension = '.ris'
+$script:LibraryExtension = '.enl'
 $script:PersonalStylesRelativePath = 'EndNote\Styles'
 $script:LibraryDataDirectorySuffix = '.Data'
 $script:EndNoteRegistryRoots = @(
@@ -172,6 +173,10 @@ $script:ProgIdRegistryPrefix = 'Registry::HKEY_CLASSES_ROOT\'
 # offline structure tests can read exactly the same values without Word.
 $script:LayoutVariableName = 'EN.Layout'
 $script:LibrariesVariableName = 'EN.Libraries'
+# Every CWYW field code (EN.CITE, EN.CITE.DATA, EN.REFLIST) starts with this prefix. The parts
+# are the DOCX stories that can hold a citation.
+$script:EndNoteFieldCodePrefix = 'ADDIN EN.'
+$script:CitationStoryParts = @('word/document.xml', 'word/footnotes.xml', 'word/endnotes.xml')
 $script:LayoutStylePattern = '<Style>(.*?)</Style>'
 $script:LayoutRootOpenTag = '<ENLayout>'
 $script:LayoutStylePlaceholder = '@@ENDNOTE_STYLE@@'
@@ -736,6 +741,52 @@ function Assert-EndNoteLibrary {
     return [ordered]@{ path = $resolved; data_directory = $dataDirectory }
 }
 
+function Assert-EmptyLibraryTemplate {
+    param([Parameter(Mandatory)][string]$Path)
+    $template = Assert-EndNoteLibrary -Path $Path
+    $count = Get-EndNoteRecordCount -LibraryFile $template.path -IncludeTrash
+    if ($count -ne 0) {
+        throw "The empty library template must contain zero stored references, including trash; found $count in $($template.path)."
+    }
+    return $template
+}
+
+function Get-ConfiguredEmptyLibraryTemplate {
+    $librarySettings = Get-OptionalProperty -Object (Get-AgentDefaults) -Name 'library'
+    $path = [string](Get-OptionalProperty -Object $librarySettings -Name 'empty_template_path')
+    if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+    return $path.Trim()
+}
+
+function Test-DocumentHasEndNoteFields {
+    param([Parameter(Mandatory)][string]$DocumentPath)
+    # Word may split one field code across several w:instrText runs, so each story's runs are
+    # joined before matching; w:fldSimple keeps its whole code in the w:instr attribute.
+    Add-Type -AssemblyName System.IO.Compression
+    $stream = $null
+    $archive = $null
+    try {
+        $stream = New-Object System.IO.FileStream($DocumentPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $archive = New-Object System.IO.Compression.ZipArchive($stream, [System.IO.Compression.ZipArchiveMode]::Read)
+        foreach ($partName in $script:CitationStoryParts) {
+            $entry = $archive.GetEntry($partName)
+            if ($null -eq $entry) { continue }
+            $reader = New-Object System.IO.StreamReader($entry.Open(), (New-Object System.Text.UTF8Encoding $false))
+            try { $xml = $reader.ReadToEnd() }
+            finally { $reader.Dispose() }
+            $codes = (@([regex]::Matches($xml, '<w:instrText[^>]*>([^<]*)</w:instrText>')) | ForEach-Object { $_.Groups[1].Value }) -join ''
+            $codes += (@([regex]::Matches($xml, '<w:fldSimple[^>]*\sw:instr="([^"]*)"')) | ForEach-Object { $_.Groups[1].Value }) -join ''
+            if ($codes.Contains($script:EndNoteFieldCodePrefix)) { return $true }
+        }
+        return $false
+    }
+    catch { throw "InputPath could not be read as a DOCX package ($DocumentPath): $($_.Exception.Message)" }
+    finally {
+        if ($null -ne $archive) { $archive.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
 # ---------------------------------------------------------------------------------------------
 # Output styles.
 # ---------------------------------------------------------------------------------------------
@@ -1239,8 +1290,8 @@ function Resolve-EndNoteImportLibrary {
         [AllowNull()][string]$EmptyTemplatePath
     )
     $fullTarget = [IO.Path]::GetFullPath($TargetPath)
-    if ([IO.Path]::GetExtension($fullTarget) -ine '.enl') {
-        throw "LibraryPath must use the .enl extension: $fullTarget"
+    if ([IO.Path]::GetExtension($fullTarget) -ine $script:LibraryExtension) {
+        throw "LibraryPath must use the $($script:LibraryExtension) extension: $fullTarget"
     }
     if (Test-Path -LiteralPath $fullTarget -PathType Leaf) {
         $library = Assert-EndNoteLibrary -Path $fullTarget
@@ -1252,17 +1303,16 @@ function Resolve-EndNoteImportLibrary {
         throw "Cannot create the library because its sibling data path already exists: $targetData"
     }
     if ([string]::IsNullOrWhiteSpace($EmptyTemplatePath)) {
-        throw 'LibraryPath does not exist. Supply EmptyLibraryTemplatePath pointing to a closed, empty EndNote library to create a new library before import.'
+        $EmptyTemplatePath = Get-ConfiguredEmptyLibraryTemplate
+    }
+    if ([string]::IsNullOrWhiteSpace($EmptyTemplatePath)) {
+        throw "No EndNote library exists at $fullTarget. Create an empty library once in EndNote (File > New), close EndNote, and register it with configure-defaults -EmptyLibraryTemplatePath, or pass EmptyLibraryTemplatePath to this call."
     }
 
-    $template = Assert-EndNoteLibrary -Path $EmptyTemplatePath
+    $template = Assert-EmptyLibraryTemplate -Path $EmptyTemplatePath
     $runningEndNote = @(Get-Process -Name $script:EndNoteProcessName -ErrorAction SilentlyContinue)
     if ($runningEndNote.Count -gt 0) {
-        throw 'Creating a new library from EmptyLibraryTemplatePath requires EndNote to be fully closed, so no background library or SQLite/WAL file can change during the pair copy. Close EndNote and retry.'
-    }
-    $templateCount = Get-EndNoteRecordCount -LibraryFile $template.path -IncludeTrash
-    if ($templateCount -ne 0) {
-        throw "EmptyLibraryTemplatePath must contain zero stored references, including trash; found $templateCount in $($template.path)."
+        throw 'Creating a new library from the empty library template requires EndNote to be fully closed, so no background library or SQLite/WAL file can change during the pair copy. Close EndNote and retry.'
     }
     $parent = Split-Path -Parent $fullTarget
     if ([string]::IsNullOrWhiteSpace($parent)) {
@@ -2235,8 +2285,20 @@ function Invoke-ConfigureDefaults {
     $defaults = Read-Utf8JsonFile -Path $script:PackagedDefaultsPath -Label 'The packaged defaults file'
     if ($null -eq $defaults) { throw "The packaged defaults file is empty: $script:PackagedDefaultsPath" }
 
+    # Republishing the packaged defaults keeps a registered empty library template, so that
+    # one-time setup survives a reset. -EmptyLibraryTemplatePath replaces it once verified empty.
+    $templatePath = $null
+    if (-not [string]::IsNullOrWhiteSpace($EmptyLibraryTemplatePath)) {
+        $templatePath = (Assert-EmptyLibraryTemplate -Path $EmptyLibraryTemplatePath).path
+    }
+    else {
+        try { $templatePath = Get-ConfiguredEmptyLibraryTemplate }
+        catch { Write-Log -Level WARN -Message "Could not read the registered empty library template, so none is kept: $($_.Exception.Message)" }
+    }
+    $defaults.library.empty_template_path = $templatePath
+
     New-Item -ItemType Directory -Path $script:UserConfigDirectory -Force | Out-Null
-    Copy-Item -LiteralPath $script:PackagedDefaultsPath -Destination $script:UserDefaultsPath -Force
+    [IO.File]::WriteAllText($script:UserDefaultsPath, ($defaults | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding $false))
     Write-Log -Level INFO -Message "Wrote agent defaults to: $script:UserDefaultsPath"
 
     Write-JsonResult ([ordered]@{
@@ -2529,8 +2591,26 @@ function Invoke-Unformat {
 }
 
 function Invoke-ImportRis {
-    if ([string]::IsNullOrWhiteSpace($LibraryPath)) { throw 'import-ris requires LibraryPath.' }
     if ([string]::IsNullOrWhiteSpace($RisPath)) { throw 'import-ris requires RisPath.' }
+    $targetLibrary = $LibraryPath
+    $documentPath = $null
+    if ([string]::IsNullOrWhiteSpace($targetLibrary)) {
+        if ([string]::IsNullOrWhiteSpace($InputPath)) {
+            throw 'import-ris requires LibraryPath, or InputPath naming the DOCX whose library lives beside it.'
+        }
+        $documentPath = Resolve-ExistingFile -Path $InputPath -Label 'InputPath'
+        if ([IO.Path]::GetExtension($documentPath) -ine $script:DocxExtension) { throw 'InputPath must be a .docx file.' }
+        # A document's own library is <document stem>.enl beside it. String path APIs, as in
+        # Get-LibraryDataDirectory, so a \\?\ document path works too.
+        $targetLibrary = [IO.Path]::Combine([IO.Path]::GetDirectoryName($documentPath), [IO.Path]::GetFileNameWithoutExtension($documentPath) + $script:LibraryExtension)
+        if (-not (Test-Path -LiteralPath $targetLibrary -PathType Leaf) -and (Test-DocumentHasEndNoteFields -DocumentPath $documentPath)) {
+            throw "InputPath already carries EndNote fields, so its citations belong to an existing library. Pass that library as LibraryPath instead of creating ${targetLibrary}: $documentPath"
+        }
+        Write-Log -Level INFO -Message "Using the document library beside the DOCX: $targetLibrary"
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($InputPath)) {
+        Write-Log -Level INFO -Message 'LibraryPath was supplied, so InputPath does not choose the library.'
+    }
     $resolvedRis = Resolve-ExistingFile -Path $RisPath -Label 'RisPath'
     if ([IO.Path]::GetExtension($resolvedRis) -ine $script:RisExtension) {
         throw "RisPath must use the $($script:RisExtension) extension: $resolvedRis"
@@ -2541,7 +2621,7 @@ function Invoke-ImportRis {
         throw 'RisPath contains no RIS records (no line beginning with TY  - ).'
     }
 
-    $resolved = Resolve-EndNoteImportLibrary -TargetPath $LibraryPath -EmptyTemplatePath $EmptyLibraryTemplatePath
+    $resolved = Resolve-EndNoteImportLibrary -TargetPath $targetLibrary -EmptyTemplatePath $EmptyLibraryTemplatePath
     $library = $resolved.library
     $beforeCount = Get-EndNoteRecordCount -LibraryFile $library.path
     $installation = Get-EndNoteInstallation
@@ -2577,6 +2657,7 @@ function Invoke-ImportRis {
             action                      = 'import-ris'
             library_path                = $library.path
             library_created             = [bool]$resolved.created
+            document_path               = $documentPath
             empty_library_template_path = $resolved.template_path
             ris_path                    = $resolvedRis
             ris_record_count             = $risRecordCount

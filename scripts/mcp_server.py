@@ -276,9 +276,25 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Persist this plugin's defaults (default output style, timeouts and bibliography "
             "expectations) to the per-user configuration directory and report the effective values. "
+            "Pass empty_library_template_path once to register the zero-record library that "
+            "import_reference_file clones when its target library does not exist; a registered "
+            "template is kept when this tool runs again without it. "
             "EndNote's own preferences and UI state are left untouched."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "empty_library_template_path": {
+                    "type": "string",
+                    "description": (
+                        "Optional absolute path to an EndNote library with zero stored references, "
+                        "including trash, created once in EndNote with File > New."
+                    ),
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
         "annotations": {
             "title": "Configure EndNote for Word Defaults",
             "readOnlyHint": False,
@@ -464,29 +480,43 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Import a RIS file into the exact EndNote library supplied by library_path through "
             "EndNote's native Direct Export route, then report the before/after live-reference "
-            "counts. If library_path does not exist, empty_library_template_path may name a "
-            "closed EndNote library with zero stored references, including trash; EndNote must "
-            "be fully closed while its .enl and .Data pair is copied "
-            "to create the target before import. Never guesses rec_numbers and never writes "
-            "sdb.eni directly; search the library again after this call."
+            "counts. When the user names no library, omit library_path and pass document_path: "
+            "the target is <document stem>.enl beside the DOCX, and it is refused when it does "
+            "not exist yet but the DOCX already carries EndNote fields. A missing target is "
+            "created by copying empty_library_template_path, or the template registered with "
+            "configure_endnote_defaults, which must hold zero stored references, including "
+            "trash; EndNote must be fully closed while its .enl and .Data pair is copied. "
+            "Never guesses rec_numbers and never writes sdb.eni directly; search the returned "
+            "library_path again after this call."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "library_path": {
                     "type": "string",
-                    "description": "Absolute target .enl path. It may be absent only when an empty template is supplied.",
+                    "description": (
+                        "Absolute target .enl path. It may be absent when an empty template is "
+                        "supplied or registered. Omit it to use document_path's library."
+                    ),
+                },
+                "document_path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute DOCX path whose library is <document stem>.enl beside it. "
+                        "Used only when library_path is omitted."
+                    ),
                 },
                 "ris_path": {"type": "string", "description": "Absolute path to a non-empty UTF-8 .ris file."},
                 "empty_library_template_path": {
                     "type": "string",
                     "description": (
                         "Optional absolute path to a closed, empty .enl library to clone when "
-                        "library_path does not yet exist. Ignored when the target exists."
+                        "the target does not yet exist. Overrides the registered template; "
+                        "ignored when the target exists."
                     ),
                 },
             },
-            "required": ["library_path", "ris_path"],
+            "required": ["ris_path"],
             "additionalProperties": False,
         },
         "annotations": {

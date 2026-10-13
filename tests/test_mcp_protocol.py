@@ -212,8 +212,13 @@ class McpProtocolTests(unittest.TestCase):
     def test_ris_import_targets_an_explicit_library_and_file(self) -> None:
         tools = {tool["name"]: tool for tool in self.list_tools()}
         schema = tools["import_reference_file"]["inputSchema"]
-        self.assertEqual(schema["required"], ["library_path", "ris_path"])
+        # library_path may be omitted in favour of document_path's library.
+        self.assertEqual(schema["required"], ["ris_path"])
+        self.assertIn("library_path", schema["properties"])
+        self.assertIn("document_path", schema["properties"])
         self.assertIn("empty_library_template_path", schema["properties"])
+        configure = tools["configure_endnote_defaults"]["inputSchema"]
+        self.assertIn("empty_library_template_path", configure["properties"])
         annotations = tools["import_reference_file"]["annotations"]
         self.assertTrue(annotations["destructiveHint"])
         self.assertFalse(annotations["idempotentHint"])
@@ -236,6 +241,13 @@ class McpProtocolTests(unittest.TestCase):
             command[command.index("-EmptyLibraryTemplatePath") + 1],
             r"C:\Research\Empty.enl",
         )
+        derived = server._build_command(
+            "import-ris",
+            {"document_path": r"C:\Research\paper.docx", "ris_path": r"C:\Research\references.ris"},
+            "pwsh.exe",
+        )
+        self.assertNotIn("-LibraryPath", derived)
+        self.assertEqual(derived[derived.index("-InputPath") + 1], r"C:\Research\paper.docx")
 
     def test_default_render_timeout_scales_for_large_manifests(self) -> None:
         server = load_server_module()
