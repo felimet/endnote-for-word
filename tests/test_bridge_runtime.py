@@ -1,8 +1,8 @@
 """Offline runtime tests for bridge helpers that need a PowerShell host but not Word.
 
 Invoke-HiddenProcess is lifted out of the bridge through the PowerShell AST and run against a
-Python child. The UNC test drives -Action import-ris, which rejects a non-.ris file before
-EndNote is ever looked up, and echoes the resolved path in its error. The library tests use
+Python child. The UNC test drives import-ris and render into failures that happen before
+EndNote or Word is looked up and that echo or read the resolved path. The library tests use
 synthetic libraries and a per-test %APPDATA%, so the user's registered defaults are never
 read or written.
 """
@@ -35,6 +35,7 @@ from test_offline_structure import (  # noqa: E402
 ROOT = TESTS_DIRECTORY.parent
 BRIDGE = ROOT / "scripts" / "endnote-word.ps1"
 PYTHON_ENV_VARIABLE = "ENDNOTE_WORD_PYTHON"
+NO_RIS_RECORDS_ERROR = "RisPath contains no RIS records (no line beginning with TY  - )."
 NO_ENDNOTE_ERROR = (
     "EndNote is not installed or could not be discovered, so RIS cannot be imported through "
     "EndNote Direct Export."
@@ -133,29 +134,53 @@ class BridgeRuntimeTests(unittest.TestCase):
                 self.assertEqual(result["stderr_length"], CHILD_STDERR_BYTES)
 
     def test_unc_paths_resolve_to_plain_file_system_paths(self) -> None:
-        local = self.workspace / "references.txt"
-        local.write_text("TY  - JOUR\nER  - \n", encoding="utf-8")
-        resolved = str(local.resolve())
+        resolved = str(self.workspace.resolve())
         if len(resolved) < 3 or resolved[1:3] != ":\\":
             self.skipTest(f"The workspace is not on a drive letter: {resolved}")
-        unc = "\\\\localhost\\" + resolved[0] + "$" + resolved[2:]
-        # os.path.isfile turns access denied into False; Path.is_file raises on it.
-        if not os.path.isfile(unc):
+        unc_workspace = "\\\\localhost\\" + resolved[0] + "$" + resolved[2:]
+        # os.path.isdir turns access denied into False; Path.is_dir raises on it.
+        if not os.path.isdir(unc_workspace):
             self.skipTest("The administrative share \\\\localhost\\<drive>$ is not reachable.")
+        contents = {
+            "references.txt": "TY  - JOUR\nER  - \n",
+            "empty.ris": "no records here\n",
+            "manifest.json": "{not json",
+            "input.docx": "",
+        }
+        unc = {}
+        for name, text in contents.items():
+            (self.workspace / name).write_text(text, encoding="utf-8")
+            unc[name] = unc_workspace + "\\" + name
+        library = str(self.workspace / "Library.enl")
+        cases = {
+            # The resolved path is echoed back in plain form.
+            "extension": (
+                ["-Action", "import-ris", "-LibraryPath", library, "-RisPath", unc["references.txt"]],
+                f"RisPath must use the .ris extension: {unc['references.txt']}",
+            ),
+            # Reaching the record count proves .NET opened the UNC file; the provider-qualified
+            # form is rejected on 5.1 and read as a relative path on 7.
+            "read": (
+                ["-Action", "import-ris", "-LibraryPath", library, "-RisPath", unc["empty.ris"]],
+                NO_RIS_RECORDS_ERROR,
+            ),
+            "render": (
+                [
+                    "-Action", "render",
+                    "-InputPath", unc["input.docx"],
+                    "-OutputPath", str(self.workspace / "output" / "output.docx"),
+                    "-ManifestPath", unc["manifest.json"],
+                ],
+                f"ManifestPath is not valid JSON ({unc['manifest.json']}):",
+            ),
+        }
         for host in self.hosts:
-            with self.subTest(host=Path(host).name):
-                completed = run_host(
-                    host,
-                    [
-                        "-File", str(BRIDGE),
-                        "-Action", "import-ris",
-                        "-LibraryPath", str(self.workspace / "Library.enl"),
-                        "-RisPath", unc,
-                    ],
-                )
-                result = last_json_line(completed)
-                self.assertFalse(result["ok"])
-                self.assertEqual(result["error"], f"RisPath must use the .ris extension: {unc}")
+            for case, (arguments, expected) in cases.items():
+                with self.subTest(host=Path(host).name, case=case):
+                    result = last_json_line(run_host(host, ["-File", str(BRIDGE), *arguments]))
+                    self.assertFalse(result["ok"])
+                    self.assertTrue(result["error"].startswith(expected), result["error"])
+                    self.assertNotIn("FileSystem::", result["error"])
 
     def test_unformat_refuses_an_output_that_aliases_its_input_through_a_short_name(self) -> None:
         directory = self.workspace / "endnote long directory name"
