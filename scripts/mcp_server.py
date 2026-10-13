@@ -1038,12 +1038,8 @@ _LIFETIME_JOB: int | None = None
 _LIFETIME_JOB_LOCK = threading.Lock()
 
 
-def _bind_to_server_lifetime(process: subprocess.Popen) -> None:
-    """Windows keeps a child alive when its parent dies. Every bridge and every EndNote this server
-    starts joins one kill-on-close job object, so even a hard kill of the server leaves none behind."""
-    global _LIFETIME_JOB
-    if os.name != "nt":
-        return
+def _job_object_api() -> tuple[Any, Any]:
+    """kernel32 with the job-object signatures, and a function that sets a job's limit flags."""
     import ctypes
     from ctypes import wintypes
 
@@ -1067,19 +1063,55 @@ def _bind_to_server_lifetime(process: subprocess.Popen) -> None:
     kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
     kernel32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
     kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+    def set_limit_flags(job: int, flags: int) -> bool:
+        limits = ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = flags
+        if kernel32.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)):
+            return True
+        _log(f"could not set the job object limits: {ctypes.WinError(ctypes.get_last_error())}")
+        return False
+
+    return kernel32, set_limit_flags
+
+
+def _bind_to_server_lifetime(process: subprocess.Popen) -> None:
+    """Windows keeps a child alive when its parent dies. Every bridge and every EndNote this server
+    starts joins one kill-on-close job object, so even a hard kill of the server leaves none behind."""
+    global _LIFETIME_JOB
+    if os.name != "nt":
+        return
+    import ctypes
+
+    kernel32, set_limit_flags = _job_object_api()
     with _LIFETIME_JOB_LOCK:
         if _LIFETIME_JOB is None:
             job = kernel32.CreateJobObjectW(None, None)
-            limits = ExtendedLimits()
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            if not job or not kernel32.SetInformationJobObject(
-                job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)
-            ):
+            if not job:
                 _log(f"kill-on-close job object unavailable: {ctypes.WinError(ctypes.get_last_error())}")
+                return
+            if not set_limit_flags(job, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE):
+                kernel32.CloseHandle(job)
                 return
             _LIFETIME_JOB = job  # held for the server's lifetime; the OS closes it on exit
         if not kernel32.AssignProcessToJobObject(_LIFETIME_JOB, int(process._handle)):
             _log(f"could not bind PID {process.pid} to the server's lifetime: {ctypes.WinError(ctypes.get_last_error())}")
+
+
+def _release_server_lifetime() -> None:
+    """Let every process bound so far outlive the server; later ones join a new job object.
+    Called only from the worker between jobs, when the one process still bound is an EndNote
+    that the user has started working in."""
+    global _LIFETIME_JOB
+    if os.name != "nt":
+        return
+    kernel32, set_limit_flags = _job_object_api()
+    with _LIFETIME_JOB_LOCK:
+        if _LIFETIME_JOB is None or not set_limit_flags(_LIFETIME_JOB, 0):
+            return
+        kernel32.CloseHandle(_LIFETIME_JOB)
+        _LIFETIME_JOB = None
 
 
 class _BridgeLock:
@@ -1169,8 +1201,11 @@ class _JobRunner:
         self._pending: queue.Queue[_Job | None] = queue.Queue()
         self._worker: threading.Thread | None = None
         self._stopping = False
-        # (PID, recent-library list before it started) of an EndNote this server started.
+        # (PID, recent-library list before it started) of an EndNote this server started, and the
+        # library windows this server opened in it. EndNote is single-instance, so a library the
+        # user opens meanwhile lands in that same process and makes it the user's.
         self._owned_endnote: tuple[int, dict[str, str]] | None = None
+        self._owned_windows: set[int] = set()
 
     # -- public, called from the MCP thread ------------------------------------------------
 
@@ -1342,9 +1377,11 @@ class _JobRunner:
                 "for a very large library, or answer the dialog EndNote shows.",
                 {"blocking_dialogs": [{"title": item["title"], "buttons": item["buttons"]} for item in dialogs]},
             )
-        if not running:
-            with self._condition:
+        with self._condition:
+            if not running:
                 self._owned_endnote = (window.process_id, recent)
+            if self._owned_endnote is not None and self._owned_endnote[0] == window.process_id:
+                self._owned_windows.add(window.handle)
         return _Session(library, window.process_id, preexisting, recent)
 
     def _close_session(self, session: _Session, job: _Job) -> None:
@@ -1373,9 +1410,12 @@ class _JobRunner:
         if self._owned_endnote is not None:
             return
         new = _process_pids(ENDNOTE_PROCESS_NAME) - endnote_before
-        if len(new) == 1:
+        sessions = _session_module()
+        if len(new) == 1 and sessions is not None:
+            process_id = new.pop()
             with self._condition:
-                self._owned_endnote = (new.pop(), recent_before)
+                self._owned_endnote = (process_id, recent_before)
+                self._owned_windows = {window.handle for window in sessions.library_windows({process_id})}
 
     def _close_owned_endnote(self, lock: _BridgeLock) -> None:
         owned = self._owned_endnote
@@ -1395,6 +1435,15 @@ class _JobRunner:
 
         lock.acquire(lambda: False)
         try:
+            # A visible frame or a library this server did not open means the user works in it now.
+            foreign = [window.title for window in sessions.library_windows({process_id}) if window.handle not in self._owned_windows]
+            if foreign or any(window.visible for window in sessions.frame_windows({process_id})):
+                _log(f"EndNote PID {process_id}, started by this server, now holds the user's work {foreign}; leaving it open.")
+                with self._condition:
+                    self._owned_endnote = None
+                    self._owned_windows.clear()
+                _release_server_lifetime()
+                return
             # Closing the last library usually ends EndNote; the frame is closed only when it does not.
             for window in sessions.library_windows({process_id}):
                 sessions.close_window(window.handle)
@@ -1415,6 +1464,7 @@ class _JobRunner:
                 _log(f"Closed EndNote PID {process_id}, which this server had started.")
             with self._condition:
                 self._owned_endnote = None
+                self._owned_windows.clear()
             try:
                 sessions.restore_recent_libraries(recent)
             except OSError as exc:

@@ -25,6 +25,9 @@ All notable changes to this project are documented in this file. The format foll
 - An EndNote the server started closes after `ENDNOTE_IDLE_CLOSE_SECONDS` (default 120) without a
   job, and is ended when it ignores every close request. Bridges and server-started EndNote sit in
   a kill-on-close job object, so they end with the server. A user's own EndNote is never ended.
+- An EndNote the server started becomes the user's once the user opens a library in it or shows
+  its main window, because EndNote runs one instance per user: the server then never closes or
+  ends it, and it outlives the server.
 
 ### Changed
 

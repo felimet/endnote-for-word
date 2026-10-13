@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -447,15 +448,17 @@ class OwnedEndNoteCloseTests(unittest.TestCase):
     class FakeSessions:
         POLL_SECONDS = 0
 
-        def __init__(self) -> None:
+        def __init__(self, library_handles: list[int], frame_visible: bool) -> None:
             self.closed: list[int] = []
             self.restored: list[dict] = []
+            self.library_handles = library_handles
+            self.frame_visible = frame_visible
 
         def library_windows(self, _process_ids):
-            return [type("Window", (), {"handle": 1})()]
+            return [types.SimpleNamespace(handle=handle, title=f"Library {handle}.enl") for handle in self.library_handles]
 
         def frame_windows(self, _process_ids):
-            return [type("Window", (), {"handle": 2})()]
+            return [types.SimpleNamespace(handle=2, title="EndNote 21", visible=self.frame_visible)]
 
         def dismiss_notices(self, _process_ids):
             return []
@@ -470,11 +473,11 @@ class OwnedEndNoteCloseTests(unittest.TestCase):
         def release(self) -> None:
             pass
 
-    def close_owned(self, exits_on_close: bool) -> tuple[list[int], FakeSessions, object]:
+    def close_owned(self, exits_on_close: bool, library_handles: list[int] = (1,), frame_visible: bool = False):
         from unittest import mock
 
         server = load_server_module()
-        sessions = self.FakeSessions()
+        sessions = self.FakeSessions(list(library_handles), frame_visible)
         running = {4242}
         killed: list[int] = []
 
@@ -491,6 +494,7 @@ class OwnedEndNoteCloseTests(unittest.TestCase):
         sessions.close_window = close_window
         runner = server._JobRunner()
         runner._owned_endnote = (4242, {"File1": "mine.enl"})
+        runner._owned_windows = {1}
         with mock.patch.multiple(server, LIBRARY_CLOSE_WAIT_SECONDS=0, ENDNOTE_EXIT_WAIT_SECONDS=0,
                                  _session_module=lambda: sessions, _terminate_process_pid=terminate,
                                  _process_pids=lambda _name: set(running)):
@@ -510,6 +514,12 @@ class OwnedEndNoteCloseTests(unittest.TestCase):
         self.assertEqual(killed, [4242])
         self.assertIsNone(runner._owned_endnote)
         self.assertEqual(sessions.restored, [{"File1": "mine.enl"}])
+
+    def test_a_library_the_user_opened_in_it_makes_the_endnote_theirs(self) -> None:
+        for library_handles, frame_visible in (([1, 7], False), ([1], True)):
+            killed, sessions, runner = self.close_owned(False, library_handles, frame_visible)
+            self.assertEqual((killed, sessions.closed, sessions.restored), ([], [], []))
+            self.assertIsNone(runner._owned_endnote)
 
 
 @unittest.skipUnless(os.name == "nt", "Only Windows refuses to rename a process's working folder.")
