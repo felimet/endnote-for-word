@@ -36,7 +36,7 @@ from typing import Any, BinaryIO
 
 
 SERVER_NAME = "endnote-for-word"
-SERVER_VERSION = "1.5.0"
+SERVER_VERSION = "1.5.1"
 # Absolute: main() may leave the folder the server was started in.
 SCRIPT_PATH = Path(__file__).resolve().with_name("endnote-word.ps1")
 SCRIPT_DIRECTORY = SCRIPT_PATH.parent
