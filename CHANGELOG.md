@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.0] - 2026-10-14
 
 ### Added
 
@@ -143,6 +143,7 @@ All notable changes to this project are documented in this file. The format foll
 
 State of `main` when this changelog was started.
 
+[1.5.0]: https://github.com/felimet/endnote-for-word/releases/tag/v1.5.0
 [1.4.0]: https://github.com/felimet/endnote-for-word/releases/tag/v1.4.0
 [1.3.0]: https://github.com/felimet/endnote-for-word/releases/tag/v1.3.0
 [1.2.0]: https://github.com/felimet/endnote-for-word/tree/69a5bb2
