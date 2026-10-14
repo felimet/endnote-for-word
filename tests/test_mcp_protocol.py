@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -25,7 +26,7 @@ BRIDGE = ROOT / "scripts" / "endnote-word.ps1"
 POWERSHELL_ENV_VARIABLE = "ENDNOTE_WORD_POWERSHELL"
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "endnote-for-word"
-SERVER_VERSION = "1.4.0"
+SERVER_VERSION = "1.5.0"
 PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5
 
 STUB_RESULT = {"ok": True, "action": "stub", "checks": {"stub_bridge": True}}
@@ -44,6 +45,8 @@ EXPECTED_TOOLS = {
     "unformat_endnote_word_document",
     "export_reference_import_file",
     "import_reference_file",
+    "get_endnote_job_status",
+    "cancel_endnote_job",
 }
 
 DESTRUCTIVE_TOOLS = {
@@ -65,6 +68,7 @@ READ_ONLY_TOOLS = {
     "get_endnote_reference",
     "precheck_endnote_manifest",
     "validate_endnote_word_document",
+    "get_endnote_job_status",
 }
 
 REQUIRED_ANNOTATIONS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
@@ -76,6 +80,8 @@ def load_server_module():
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load {SERVER}")
     module = importlib.util.module_from_spec(spec)
+    # dataclasses resolves postponed annotations through sys.modules, so register first.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -360,6 +366,160 @@ class McpProtocolTests(unittest.TestCase):
         result = response["result"]
         self.assertFalse(result["isError"], result)
         self.assertEqual(result["structuredContent"], STUB_RESULT)
+
+    def call_tool(self, request_id: int, name: str, arguments: dict) -> dict:
+        response = self.request(
+            {"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": {"name": name, "arguments": arguments}}
+        )
+        return response["result"]["structuredContent"]
+
+    def render_arguments(self) -> dict:
+        # The manifest names no existing library, so the worker opens no EndNote session.
+        return {
+            "input_path": str(Path(self._directory.name) / "input.docx"),
+            "output_path": str(Path(self._directory.name) / "output.docx"),
+            "manifest_path": str(Path(self._directory.name) / "missing-manifest.json"),
+        }
+
+    def test_render_returns_a_job_that_finishes_with_the_bridge_result(self) -> None:
+        self.initialize()
+        submitted = self.call_tool(10, "render_endnote_word_document", self.render_arguments())
+        self.assertTrue(submitted["ok"], submitted)
+        self.assertIn(submitted["state"], {"queued", "waiting_for_lock", "running"})
+        status = self.call_tool(11, "get_endnote_job_status", {"job_id": submitted["job_id"], "wait_seconds": 60})
+        self.assertEqual(status["job"]["state"], "succeeded", status)
+        self.assertEqual(status["job"]["result"], STUB_RESULT)
+        listing = self.call_tool(12, "get_endnote_job_status", {})
+        self.assertEqual([job["job_id"] for job in listing["jobs"]], [submitted["job_id"]])
+
+    def test_background_false_waits_for_the_result(self) -> None:
+        self.initialize()
+        result = self.call_tool(20, "render_endnote_word_document", {**self.render_arguments(), "background": False})
+        self.assertEqual(result, STUB_RESULT)
+
+    def test_unknown_job_is_reported(self) -> None:
+        self.initialize()
+        status = self.call_tool(30, "get_endnote_job_status", {"job_id": "missing"})
+        self.assertFalse(status["ok"])
+
+
+@unittest.skipUnless(os.name == "nt", "The cancellation path ends the bridge with taskkill.")
+class McpJobCancellationTests(unittest.TestCase):
+    """A slow stub bridge keeps the first job running while the second waits in the queue."""
+
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory(prefix="endnote-jobs-")
+        self.addCleanup(self._directory.cleanup)
+        payload = json.dumps(STUB_RESULT, separators=(", ", ": "))
+        stub = Path(self._directory.name) / "slow-stub-powershell.cmd"
+        stub.write_text(f"@echo off\r\nping -n 30 127.0.0.1 >nul\r\necho {payload}\r\n", encoding="ascii")
+        environment = {**os.environ, POWERSHELL_ENV_VARIABLE: str(stub), "PYTHONIOENCODING": "utf-8"}
+        self.process = subprocess.Popen(
+            [sys.executable, str(SERVER)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=environment, text=True, encoding="utf-8",
+        )
+        self.addCleanup(terminate, self.process)
+
+    def call_tool(self, request_id: int, name: str, arguments: dict) -> dict:
+        message = {"jsonrpc": "2.0", "id": request_id, "method": "tools/call", "params": {"name": name, "arguments": arguments}}
+        self.process.stdin.write(json.dumps(message) + "\n")
+        self.process.stdin.flush()
+        return json.loads(self.process.stdout.readline())["result"]["structuredContent"]
+
+    def test_queued_and_running_jobs_can_be_cancelled(self) -> None:
+        arguments = {
+            "input_path": str(Path(self._directory.name) / "input.docx"),
+            "output_path": str(Path(self._directory.name) / "output.docx"),
+            "manifest_path": str(Path(self._directory.name) / "missing-manifest.json"),
+        }
+        running = self.call_tool(1, "render_endnote_word_document", arguments)["job_id"]
+        queued = self.call_tool(2, "update_endnote_word_fields", {"input_path": arguments["input_path"]})["job_id"]
+        cancelled = self.call_tool(3, "cancel_endnote_job", {"job_id": queued})
+        self.assertEqual(cancelled["job"]["state"], "cancelled")
+        self.call_tool(4, "cancel_endnote_job", {"job_id": running})
+        status = self.call_tool(5, "get_endnote_job_status", {"job_id": running, "wait_seconds": 20})
+        self.assertEqual(status["job"]["state"], "cancelled", status)
+        self.assertFalse(status["job"]["result"]["ok"])
+
+
+class OwnedEndNoteCloseTests(unittest.TestCase):
+    """The idle close of an EndNote this server started, with the window layer faked."""
+
+    class FakeSessions:
+        POLL_SECONDS = 0
+
+        def __init__(self, library_handles: list[int], frame_visible: bool) -> None:
+            self.closed: list[int] = []
+            self.restored: list[dict] = []
+            self.library_handles = library_handles
+            self.frame_visible = frame_visible
+
+        def library_windows(self, _process_ids):
+            return [types.SimpleNamespace(handle=handle, title=f"Library {handle}.enl") for handle in self.library_handles]
+
+        def frame_windows(self, _process_ids):
+            return [types.SimpleNamespace(handle=2, title="EndNote 21", visible=self.frame_visible)]
+
+        def dismiss_notices(self, _process_ids):
+            return []
+
+        def restore_recent_libraries(self, snapshot: dict) -> None:
+            self.restored.append(snapshot)
+
+    class FreeLock:
+        def acquire(self, _should_stop) -> bool:
+            return True
+
+        def release(self) -> None:
+            pass
+
+    def close_owned(self, exits_on_close: bool, library_handles: list[int] = (1,), frame_visible: bool = False):
+        from unittest import mock
+
+        server = load_server_module()
+        sessions = self.FakeSessions(list(library_handles), frame_visible)
+        running = {4242}
+        killed: list[int] = []
+
+        def close_window(handle: int) -> None:
+            sessions.closed.append(handle)
+            if exits_on_close:
+                running.clear()
+
+        def terminate(process_id: int) -> bool:
+            killed.append(process_id)
+            running.discard(process_id)
+            return True
+
+        sessions.close_window = close_window
+        runner = server._JobRunner()
+        runner._owned_endnote = (4242, {"File1": "mine.enl"})
+        runner._owned_windows = {1}
+        with mock.patch.multiple(server, LIBRARY_CLOSE_WAIT_SECONDS=0, ENDNOTE_EXIT_WAIT_SECONDS=0,
+                                 _session_module=lambda: sessions, _terminate_process_pid=terminate,
+                                 _process_pids=lambda _name: set(running)):
+            runner._close_owned_endnote(self.FreeLock())
+        return killed, sessions, runner
+
+    def test_an_endnote_that_closes_normally_is_not_terminated(self) -> None:
+        killed, sessions, runner = self.close_owned(exits_on_close=True)
+        self.assertEqual(killed, [])
+        self.assertEqual(sessions.closed, [1])
+        self.assertIsNone(runner._owned_endnote)
+        self.assertEqual(sessions.restored, [{"File1": "mine.enl"}])
+
+    def test_an_owned_endnote_that_ignores_every_close_request_is_terminated(self) -> None:
+        killed, sessions, runner = self.close_owned(exits_on_close=False)
+        self.assertEqual(sessions.closed, [1, 2])
+        self.assertEqual(killed, [4242])
+        self.assertIsNone(runner._owned_endnote)
+        self.assertEqual(sessions.restored, [{"File1": "mine.enl"}])
+
+    def test_a_library_the_user_opened_in_it_makes_the_endnote_theirs(self) -> None:
+        for library_handles, frame_visible in (([1, 7], False), ([1], True)):
+            killed, sessions, runner = self.close_owned(False, library_handles, frame_visible)
+            self.assertEqual((killed, sessions.closed, sessions.restored), ([], [], []))
+            self.assertIsNone(runner._owned_endnote)
 
 
 @unittest.skipUnless(os.name == "nt", "Only Windows refuses to rename a process's working folder.")

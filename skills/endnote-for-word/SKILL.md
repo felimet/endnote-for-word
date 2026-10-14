@@ -4,7 +4,7 @@ description: "Find DOI-verified research papers with the Agent's available schol
 license: MIT
 metadata:
   author: Jia-Ming Zhou (Felimet)
-  version: 1.4.0
+  version: 1.5.0
 ---
 
 # EndNote for Word
@@ -58,7 +58,7 @@ Create real EndNote citations and a real bibliography in DOCX by driving EndNote
 5. For every citation, call `search_endnote_library` to find candidate records and `get_endnote_reference` to confirm the exact record. If a needed record is absent and RIS is available, call `import_reference_file` on the exact target library, then search again. If the user names no library and the DOCX carries no EndNote citations, omit `library_path` and pass the DOCX as `document_path`: the target becomes `<document stem>.enl` beside the DOCX, and the returned `library_path` is the library for every later step and the manifest. If the target library does not exist, first ensure EndNote is fully closed; the tool then creates a new `.enl` + `.Data` pair from `empty_library_template_path` or, when that is omitted, from the template registered with `configure_endnote_defaults`. When neither exists, ask the user to create an empty library once in EndNote (File > New), close EndNote, and register it. Copy only the fresh search result's `rec_number`, `first_author_surname`, year, and bare DOI into the target. A missing DOI makes the record ineligible.
 6. Build a schema v1 JSON manifest. Read [workflow-and-schema.md](references/workflow-and-schema.md) for the exact contract and worked examples, and [temporary-citations.md](references/temporary-citations.md) for the supported temporary citation grammar.
 7. Call `precheck_endnote_manifest`. It verifies every target against the library and verifies each DOI online through doi.org before Word is opened. Fix every reported problem and re-run it; the pre-check reports all mismatches at once.
-8. Call `render_endnote_word_document`. Every shared formatting entry point refuses to call CWYW if any `{{CITE:...}}` remains, because braces are EndNote temporary-citation delimiters and an unmatched marker can open Select Matching Reference. Every document marker must therefore be in the manifest; for a subset test, use a scratch copy with every unselected marker removed. Do not edit the same DOCX in Word while the render runs, and do not run two render jobs concurrently in the same Windows profile.
+8. Call `render_endnote_word_document`. Every shared formatting entry point refuses to call CWYW if any `{{CITE:...}}` remains, because braces are EndNote temporary-citation delimiters and an unmatched marker can open Select Matching Reference. Every document marker must therefore be in the manifest; for a subset test, use a scratch copy with every unselected marker removed. Do not edit the same DOCX in Word while the render runs. Render, update, and set-style return a `job_id` at once: call `get_endnote_job_status` with that id and `wait_seconds` (up to 120) until the state is `succeeded`, `failed`, or `cancelled`, and continue other work meanwhile. Jobs from every document and every agent session run one at a time; each opens its manifest library beside the libraries the user has open and closes it afterwards. Tell the user about any dialog under `attention`. When `dialogs_cancelled` names Select Matching Reference, another open library has overlapping record numbers and the job pressed Cancel on that chooser; ask the user to close the other libraries in EndNote, then render again. Call `cancel_endnote_job` for a job the user no longer wants.
 9. Call `validate_endnote_word_document` with the same manifest. A render is incomplete until validation returns `ok: true`. An output file that exists but fails validation is a diagnostic artifact, not a deliverable.
 10. Report the output path, the citation and target counts, the resolved style, whether the bibliography is present, whether EndNote was already running before the run (`endnote_preexisting`), the validation result, and any limitation that applies.
 
@@ -72,10 +72,12 @@ Use the bundled local MCP server when available:
 - `get_endnote_reference`: read-only fetch of one record by rec-number.
 - `precheck_endnote_manifest`: read-only library verification plus online doi.org verification for every bare DOI.
 - `configure_endnote_defaults`: persist the packaged default profile, and register `empty_library_template_path` after verifying it holds zero stored references. A registered template survives later calls. Invoke only when the user asks to configure defaults or register a template, or during an explicitly requested installation. It does not touch EndNote's own preferences.
-- `render_endnote_word_document`: marker-driven insertion of temporary citations followed by CWYW formatting.
+- `render_endnote_word_document`: marker-driven insertion of temporary citations followed by CWYW formatting. Runs as a background job unless `background` is false.
 - `validate_endnote_word_document`: read-only structural validation against the gates below.
-- `update_endnote_word_fields`: re-run CWYW formatting after the document text changed.
-- `set_endnote_citation_style`: switch the output style of an already formatted document.
+- `update_endnote_word_fields`: re-run CWYW formatting after the document text changed. Runs as a background job unless `background` is false.
+- `set_endnote_citation_style`: switch the output style of an already formatted document. Runs as a background job unless `background` is false.
+- `get_endnote_job_status`: a job's state, its tool result once finished, the EndNote news notices it dismissed with Cancel, and any dialog that stayed open. Without `job_id` it lists the session's jobs.
+- `cancel_endnote_job`: stop a queued or running job; no output file is written.
 - `unformat_endnote_word_document`: revert formatted citations to temporary citation text, into a new file only.
 - `export_reference_import_file`: write a UTF-8 RIS file from structured reference metadata.
 - `import_reference_file`: open the exact target library and import a RIS file through EndNote Direct Export. It reports before/after live-reference counts. With `document_path` instead of `library_path`, the target is `<document stem>.enl` beside the DOCX; a DOCX that already carries EndNote fields is refused rather than given a new library. When the target is absent and EndNote is fully closed, it first clones the supplied or registered empty library template, whose total stored-reference count, including trash, is verified as zero.

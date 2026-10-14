@@ -50,6 +50,7 @@ def package(root: Path, output: Path) -> str:
         root / "scripts" / "endnote_cleanup.ps1",
         root / "scripts" / "run-mcp.ps1",
         root / "scripts" / "endnote_library.py",
+        root / "scripts" / "endnote_session.py",
         root / "scripts" / "mcp_server.py",
         root / "skills" / PLUGIN_NAME / "SKILL.md",
     ]

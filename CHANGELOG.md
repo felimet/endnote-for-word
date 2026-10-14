@@ -4,6 +4,38 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-10-14
+
+### Added
+
+- Background jobs. `render_endnote_word_document`, `update_endnote_word_fields` and
+  `set_endnote_citation_style` return a `job_id` at once (`background: false` keeps the old
+  blocking call). `get_endnote_job_status` reports the state, any lasting dialog under
+  `attention` and the result; `cancel_endnote_job` drops a queued job or ends a running one.
+- Every action that drives EndNote runs through one queue, and a named mutex
+  (`Local\EndNoteForWordAgentBridge`) serialises jobs across every server of the Windows session,
+  such as Claude Code and Codex side by side.
+- Each job opens its manifest library beside the libraries the user has open and closes only that
+  library afterwards. EndNote's recent-library list is restored, so a job does not change the
+  library EndNote opens next.
+- EndNote's start-up news notices (`EndNote Password Expiration Policy Change`,
+  `EndNote 2025 is here!`), which block every CWYW request while visible, are answered with
+  Cancel and listed under `notices_dismissed`. No preference changes and no other dialog is
+  answered, except the CWYW record chooser below.
+- An EndNote the server started closes after `ENDNOTE_IDLE_CLOSE_SECONDS` (default 120) without a
+  job, and is ended when it ignores every close request. Bridges and server-started EndNote sit in
+  a kill-on-close job object, so they end with the server. A user's own EndNote is never ended.
+- An EndNote the server started becomes the user's once the user opens a library in it or shows
+  its main window, because EndNote runs one instance per user: the server then never closes or
+  ends it, and it outlives the server.
+
+### Changed
+
+- A CWYW `Select Matching Reference` chooser, raised when another open library has overlapping
+  record numbers, is answered with Cancel and the job fails with `dialogs_cancelled` and advice.
+  Ending the hidden Word at the chooser instead left EndNote unable to exit for minutes.
+- `ENDNOTE_READY_TIMEOUT_MS` also bounds the wait for the job's library window.
+
 ## [1.4.0] - 2026-10-14
 
 ### Added
@@ -111,6 +143,7 @@ All notable changes to this project are documented in this file. The format foll
 
 State of `main` when this changelog was started.
 
+[1.5.0]: https://github.com/felimet/endnote-for-word/releases/tag/v1.5.0
 [1.4.0]: https://github.com/felimet/endnote-for-word/releases/tag/v1.4.0
 [1.3.0]: https://github.com/felimet/endnote-for-word/releases/tag/v1.3.0
 [1.2.0]: https://github.com/felimet/endnote-for-word/tree/69a5bb2

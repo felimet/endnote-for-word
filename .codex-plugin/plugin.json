@@ -1,6 +1,6 @@
 {
   "name": "endnote-for-word",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Find DOI-verified research papers, import RIS, and create native IEEE EndNote CWYW citations and bibliographies in Microsoft Word.",
   "author": {
     "name": "Jia-Ming Zhou (Felimet)"
