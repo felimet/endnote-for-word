@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 PACKAGE_NAME = "endnote-for-word"
-RELEASE_VERSION = "1.5.0"
+RELEASE_VERSION = "1.5.1"
 RELEASE_AUTHOR = "Jia-Ming Zhou (Felimet)"
 SKILL_DIRECTORY = ROOT / "skills" / PACKAGE_NAME
 SKILL_PATH = SKILL_DIRECTORY / "SKILL.md"
@@ -481,6 +481,21 @@ class PowerShellCompatibilityTests(unittest.TestCase):
         for path, match in calls:
             with self.subTest(path=path.relative_to(ROOT), argument=match.group(1)):
                 self.assertRegex(match.group(1), r"(?i)^\(*\s*\[string\]", match.group(0))
+
+    def test_every_document_word_opens_or_saves_as_is_named_for_recovery_cleanup(self) -> None:
+        # The MCP server removes Word's recovery entry of each WORD_DOCUMENT after it had to end the
+        # bridge's Word; a document opened or renamed without the marker would reopen in the user's
+        # next Word start. An unsaved Documents.Add() document has no path and must not be named.
+        source = BRIDGE_PATH.read_text(encoding="utf-8-sig")
+        opens = [match.start() for match in re.finditer(r"\.Documents\.Open\(", source)]
+        saves = [match.start() for match in re.finditer(r"\.SaveAs2\(", source)]
+        self.assertTrue(opens and saves, "no Word open or save call was found to check")
+        for position in opens:
+            self.assertIn("WORD_DOCUMENT=$($script:Document.FullName)", source[position:position + 600])
+        for position in saves:
+            self.assertIn("WORD_DOCUMENT=$temporary", source[max(0, position - 900):position])
+        for match in re.finditer(r"\.Documents\.Add\(\)", source):
+            self.assertNotIn("WORD_DOCUMENT", source[match.start():match.start() + 80])
 
     def test_every_script_forces_utf8_console_output(self) -> None:
         for path in iter_repository_files({".ps1"}):

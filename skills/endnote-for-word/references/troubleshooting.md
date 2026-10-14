@@ -32,6 +32,7 @@
 | Save fails with an access or sharing error | The output DOCX is open in Word or held by another process | Close it or pick a new output path. See section 7. |
 | `powershell_notice` reports `failed` or `unavailable` | The automatic PowerShell 7 install could not run or finish | The bridge keeps working under Windows PowerShell 5.1. Install PowerShell 7 by hand, or delete the state file the notice names to retry once. See installation-matrix.md. |
 | Chinese text in the console renders as garbage | Console code page is cp950 | Force UTF-8 in the terminal. See section 8. |
+| Opening Word by hand shows extra windows of `.work.docx` or `.tmp.docx` files | A hidden Word was killed with that copy open, and Word reopens every document still in its recovery list | Close those windows without saving. Through MCP the server removes these entries itself after a cancel or timeout (`word_recovery_entries_removed`); a bridge run or kill outside MCP leaves them. See section 9. |
 | `WINWORD.EXE` remains after a failed job | A COM call blocked and the process was orphaned | Kill only the PID the failed job created. See section 9. |
 | Timeout whose `stderr_tail` ends at `Saving temporary DOCX` | Word's `SaveAs2` never returned; on Windows PowerShell 5.1 it followed passing uncast `Join-Path` output as the file name | Update the bridge, prefer PowerShell 7, and clear Word's recovery state after the kill. See section 9. |
 | `no such collation sequence: ENCI_Base` | The SQLite reader queried without registering the custom collations | Register the two no-op collations before querying. See section 10. |
@@ -284,7 +285,11 @@ test keeps every save call that way. If you still see this stall:
 
 **Word misbehaves after a forced kill.** Terminating a Word process that had a document open
 leaves an entry under `HKCU\Software\Microsoft\Office\16.0\Word\Resiliency\DocumentRecovery`.
-Observed once, with no Word process left running: while five such entries existed, every
+Word adds the entry when the document opens and removes it on a clean close; the next Word the
+user starts reopens every document still listed, each in its own window. After a cancelled or
+timed-out MCP job the server removes the entries that the run added for the documents its Word
+opened or saved as, and reports the count as `word_recovery_entries_removed`; entries that
+existed before the run, such as those of the user's own documents, are kept. Observed once, with no Word process left running: while five such entries existed, every
 automated run failed early with "the 'EndNote Cwyw.dotm' global template is not loaded";
 after they were cleared, runs passed that check again. To clear them, open Word, close the
 documents listed in the Document Recovery pane without saving, and quit Word. Alternatively,
