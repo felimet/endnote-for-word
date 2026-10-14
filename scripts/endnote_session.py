@@ -17,7 +17,8 @@ process, so every job shares it. The behaviour below was measured on EndNote 21.
 
 Nothing here terminates a process. Windows are closed with WM_CLOSE, the same request a click on
 the close button sends, and the only button ever pressed is Cancel, on a news notice or on the
-record chooser.
+record chooser. The only Word state touched is the recovery entry of a document that a job's
+hidden Word had open when the server had to end it.
 """
 
 from __future__ import annotations
@@ -51,6 +52,10 @@ TITLE_SEPARATOR = " - "
 LIBRARY_WINDOW_CLASS_PREFIX = "Afx:"
 
 RECENT_LIBRARIES_KEY = r"Software\ISI ResearchSoft\EndNote\Recent Libraries"
+# Measured on Word 16.0: opening a document adds a subkey here whose binary value holds the
+# document's full path in UTF-16; a clean close removes it. A Word ended with taskkill leaves it,
+# and the user's next Word start reopens that document in its own window.
+WORD_RECOVERY_KEY = r"Software\Microsoft\Office\16.0\Word\Resiliency\DocumentRecovery"
 RECENT_LIBRARY_VALUE_PREFIX = "File"
 APP_PATHS_KEYS = (
     (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\EndNote.exe"),
@@ -231,6 +236,63 @@ def restore_recent_libraries(snapshot: dict[str, str]) -> None:
             winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
         for name in set(current) - set(snapshot):
             winreg.DeleteValue(key, name)
+
+
+def _recovery_text(key) -> str:
+    """Every value of one recovery entry as case-folded text, the path in it at either byte
+    alignment, since the fields before the path are not documented."""
+    parts: list[str] = []
+    index = 0
+    while True:
+        try:
+            _, value, _ = winreg.EnumValue(key, index)
+        except OSError:
+            break
+        index += 1
+        if isinstance(value, bytes):
+            parts.extend(value[offset:].decode("utf-16-le", "ignore") for offset in (0, 1))
+        else:
+            parts.append(str(value))
+    return "\n".join(parts).casefold()
+
+
+def document_recovery_entries() -> set[str]:
+    """Names of Word's current document-recovery entries."""
+    names: set[str] = set()
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WORD_RECOVERY_KEY) as key:
+            index = 0
+            while True:
+                try:
+                    names.add(winreg.EnumKey(key, index))
+                except OSError:
+                    break
+                index += 1
+    except FileNotFoundError:
+        pass
+    return names
+
+
+def clear_document_recovery(documents: set[str], keep: set[str]) -> list[str]:
+    """Delete the recovery entries that name one of documents, except those in keep (entries that
+    existed before the job, such as the user's own Word with the same file open)."""
+    targets = [document.casefold() for document in documents if document]
+    removed: list[str] = []
+    if not targets:
+        return removed
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WORD_RECOVERY_KEY, 0,
+                            winreg.KEY_READ | winreg.KEY_WRITE) as key:
+            for name in sorted(document_recovery_entries() - keep):
+                with winreg.OpenKey(key, name) as entry:
+                    text = _recovery_text(entry)
+                if any(target in text for target in targets):
+                    winreg.DeleteKey(key, name)
+                    removed.append(name)
+                    LOGGER.info("Removed Word's recovery entry %s for a document of a killed job.", name)
+    except FileNotFoundError:
+        pass
+    return removed
 
 
 def endnote_executable() -> str | None:

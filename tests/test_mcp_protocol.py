@@ -255,6 +255,22 @@ class McpProtocolTests(unittest.TestCase):
         self.assertNotIn("-LibraryPath", derived)
         self.assertEqual(derived[derived.index("-InputPath") + 1], r"C:\Research\paper.docx")
 
+    def test_word_document_markers_name_every_document_the_bridge_opened(self) -> None:
+        server = load_server_module()
+        stderr = (
+            "[INFO] WORD_PID=4242\r\n"
+            "[INFO] WORD_DOCUMENT=D:\\論文\\.草稿.0123.work.docx\r\n"
+            "[INFO] Saving temporary DOCX: D:\\論文\\.草稿.4567.tmp.docx\r\n"
+            "[INFO] WORD_DOCUMENT=D:\\論文\\.草稿.4567.tmp.docx\r\n"
+            "[WARN] text mentioning WORD_DOCUMENT=C:\\not\\a\\marker.docx\r\n"
+        )
+        self.assertEqual(
+            server._extract_word_documents(stderr),
+            {"D:\\論文\\.草稿.0123.work.docx", "D:\\論文\\.草稿.4567.tmp.docx"},
+        )
+        # Without a marker nothing is removed and no recovery state is read.
+        self.assertEqual(server._clear_killed_word_recovery(4242, "[INFO] WORD_PID=4242\r\n", set()), [])
+
     def test_default_render_timeout_scales_for_large_manifests(self) -> None:
         server = load_server_module()
         previous = os.environ.pop("ENDNOTE_WORD_TIMEOUT_SECONDS", None)

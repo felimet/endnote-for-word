@@ -1042,6 +1042,10 @@ function Start-Word {
     }
     else {
         $script:Document = $script:Word.Documents.Open($DocumentPath, $false, [bool]$ReadOnly)
+        # Word records every open document for crash recovery. The MCP server removes this
+        # document's record if it has to end this Word, so the user's next Word start does not
+        # reopen it. An unsaved Documents.Add() document has no path and is never named here.
+        Write-Log -Level INFO -Message "WORD_DOCUMENT=$($script:Document.FullName)"
     }
     $newProcesses = @(Get-Process $script:WordProcessName -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
     if ($newProcesses.Count -eq 1) { Write-Log -Level INFO -Message "WORD_PID=$($newProcesses[0].Id)" }
@@ -1153,6 +1157,8 @@ function Save-DocumentAtomically {
     $script:TemporarySaveDestination = $Destination
     try {
         Write-Log -Level INFO -Message "Saving temporary DOCX: $temporary"
+        # SaveAs2 renames the open document, so Word's recovery record names this path from here.
+        Write-Log -Level INFO -Message "WORD_DOCUMENT=$temporary"
         # Keep the [string] cast. Under Windows PowerShell 5.1, SaveAs2 given uncast Join-Path
         # output never returned on any measured run (part of one core busy, no file I/O, with or
         # without EndNote fields); the cast or a concatenated string returned at once, and

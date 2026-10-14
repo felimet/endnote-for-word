@@ -109,6 +109,8 @@ READY_TIMEOUT_ENV_VARIABLE = "ENDNOTE_READY_TIMEOUT_MS"
 DEFAULT_READY_TIMEOUT_MILLISECONDS = 90000
 LIBRARY_CLOSE_WAIT_SECONDS = 10
 ENDNOTE_EXIT_WAIT_SECONDS = 30
+WORD_EXIT_WAIT_SECONDS = 10
+PROCESS_EXIT_POLL_SECONDS = 0.25
 
 # Win32 job object: every bridge and every EndNote this server starts ends with the server.
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
@@ -784,6 +786,35 @@ def _extract_word_pid(stderr: str) -> int | None:
     return int(matches[-1]) if matches else None
 
 
+def _extract_word_documents(stderr: str) -> set[str]:
+    """Every path the bridge's Word had open, from its WORD_DOCUMENT markers."""
+    return {match.strip() for match in re.findall(r"^\[INFO\] WORD_DOCUMENT=(.+)$", stderr, re.MULTILINE) if match.strip()}
+
+
+def _recovery_snapshot() -> set[str]:
+    """Word's recovery entries before a bridge run; only entries added during the run may be removed."""
+    sessions = _session_module()
+    return sessions.document_recovery_entries() if sessions is not None else set()
+
+
+def _clear_killed_word_recovery(word_pid: int | None, stderr: str, keep: set[str]) -> list[str]:
+    """A Word ended with taskkill keeps its open documents in Word's recovery list, and the
+    user's next Word start reopens each one in a window. Remove the entries this run added for
+    the documents its bridge opened, once that Word has exited."""
+    sessions = _session_module()
+    documents = _extract_word_documents(stderr)
+    if sessions is None or not documents:
+        return []
+    deadline = time.monotonic() + WORD_EXIT_WAIT_SECONDS
+    while word_pid is not None and word_pid in _process_pids(WORD_PROCESS_NAME) and time.monotonic() < deadline:
+        time.sleep(PROCESS_EXIT_POLL_SECONDS)
+    try:
+        return sessions.clear_document_recovery(documents, keep)
+    except OSError as exc:
+        _log(f"could not remove Word's recovery entries for {sorted(documents)}: {exc}")
+        return []
+
+
 def _process_pids(executable_name: str) -> set[int]:
     """Return the PIDs of running processes whose image name matches executable_name."""
     if os.name != "nt":
@@ -911,6 +942,7 @@ def _invoke_bridge(action: str, arguments: dict[str, Any], timeout: int | None =
     command = _build_command(action, arguments, executable)
     effective_timeout = timeout or _timeout_seconds(action, arguments)
     before = _snapshot_watched_pids()
+    recovery_before = _recovery_snapshot()
     try:
         completed = subprocess.run(
             command,
@@ -935,6 +967,7 @@ def _invoke_bridge(action: str, arguments: dict[str, Any], timeout: int | None =
         if word_process_id is None and len(new_word_pids) == 1:
             word_process_id = new_word_pids[0]
         terminated = observed.get("terminated", [])
+        recovery_removed = _clear_killed_word_recovery(word_process_id, stderr, recovery_before)
         return _with_powershell_notice({
             "ok": False,
             "action": action,
@@ -948,6 +981,7 @@ def _invoke_bridge(action: str, arguments: dict[str, Any], timeout: int | None =
             "new_word_pids_observed": new_word_pids,
             "new_endnote_pids_observed": observed.get("EndNote.exe", []),
             "isolated_processes_terminated": terminated,
+            "word_recovery_entries_removed": len(recovery_removed),
             "stderr_tail": stderr[-STDERR_EXCERPT_CHARACTERS:],
         }, stderr)
     except OSError as exc:
@@ -1483,6 +1517,7 @@ class _JobRunner:
         command = _build_command(job.action, job.arguments, executable)
         timeout = _timeout_seconds(job.action, job.arguments)
         words_before = _process_pids(WORD_PROCESS_NAME)
+        recovery_before = _recovery_snapshot()
         try:
             process = subprocess.Popen(
                 command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1533,15 +1568,16 @@ class _JobRunner:
                 _log(f"Pressed Cancel on the CWYW dialog '{chooser['title']}'.")
                 pressed.add(chooser["handle"])
                 cancelled_dialogs.append(chooser["title"])
-        if outcome is not None:
-            self._stop_bridge(job, words_before)
+        killed_word = self._stop_bridge(job, words_before) if outcome is not None else None
         process.wait()
         for reader in readers:
             reader.join()
         job.process = None
         stderr_text = "".join(stderr)
+        recovery_removed = _clear_killed_word_recovery(killed_word, stderr_text, recovery_before) if outcome else []
         if outcome == "cancelled":
             return {"ok": False, "action": job.action, "error": "Cancelled while running; no output file was written.",
+                    "word_recovery_entries_removed": len(recovery_removed),
                     "stderr_tail": stderr_text[-STDERR_EXCERPT_CHARACTERS:]}
         if outcome == "timeout":
             return _with_powershell_notice({
@@ -1553,6 +1589,7 @@ class _JobRunner:
                     "for very large libraries."
                 ),
                 "isolated_word_pid": job.word_pid,
+                "word_recovery_entries_removed": len(recovery_removed),
                 "stderr_tail": stderr_text[-STDERR_EXCERPT_CHARACTERS:],
             }, stderr_text)
         result = _parse_bridge_output(job.action, process.returncode, "".join(stdout), stderr_text)
@@ -1563,9 +1600,10 @@ class _JobRunner:
                 result["error"] = f"CWYW asked '{cancelled_dialogs[0]}'. {CANCELLED_DIALOG_ADVICE}"
         return result
 
-    def _stop_bridge(self, job: _Job, words_before: set[int]) -> None:
-        """End the bridge tree and its hidden Word. Word comes from COM, not from the bridge, so its
-        PID is the bridge's WORD_PID marker; a PID merely seen meanwhile could be the user's Word."""
+    def _stop_bridge(self, job: _Job, words_before: set[int]) -> int | None:
+        """End the bridge tree and its hidden Word, and return that Word's PID. Word comes from COM,
+        not from the bridge, so its PID is the bridge's WORD_PID marker; a PID merely seen
+        meanwhile could be the user's Word."""
         if job.process is not None:
             _terminate_process_pid(job.process.pid)
         word_pid = job.word_pid
@@ -1574,6 +1612,7 @@ class _JobRunner:
             word_pid = new_words.pop() if len(new_words) == 1 else None
         if word_pid is not None:
             _terminate_process_pid(word_pid)
+        return word_pid
 
     def _watch_dialogs(self, job: _Job, first_seen: dict[int, float]) -> dict[str, Any] | None:
         """Dismiss news notices, report lasting dialogs, and return a CWYW chooser to cancel."""

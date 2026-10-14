@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Opening Word by hand no longer reopens the working copies of jobs the server had to end. Word
+  records every open document under `Resiliency\DocumentRecovery` and reopens each recorded one
+  in its own window at the next start when its Word was killed. The bridge now names every
+  document its Word opens or saves as (`WORD_DOCUMENT=` on stderr), and after a cancelled or
+  timed-out job the server waits for that Word to exit and removes only the entries the run added
+  for those documents; the count is reported as `word_recovery_entries_removed`.
+
 ## [1.5.0] - 2026-10-14
 
 ### Added

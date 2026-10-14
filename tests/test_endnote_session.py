@@ -18,6 +18,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 TEST_REGISTRY_KEY = r"Software\EndNoteForWordAgentTests\Recent Libraries"
+TEST_RECOVERY_KEY = r"Software\EndNoteForWordAgentTests\DocumentRecovery"
 
 
 @unittest.skipUnless(os.name == "nt", "endnote_session uses user32 and winreg.")
@@ -65,15 +66,50 @@ class EndNoteSessionTests(unittest.TestCase):
         self.session.restore_recent_libraries(snapshot)
         self.assertEqual(self.session.recent_libraries(), snapshot)
 
-    @staticmethod
-    def delete_test_key() -> None:
+    def test_only_new_recovery_entries_of_the_job_documents_are_removed(self) -> None:
         import winreg
 
-        for path in (TEST_REGISTRY_KEY, TEST_REGISTRY_KEY.rsplit("\\", 1)[0]):
+        original_key = self.session.WORD_RECOVERY_KEY
+        self.session.WORD_RECOVERY_KEY = TEST_RECOVERY_KEY
+        self.addCleanup(setattr, self.session, "WORD_RECOVERY_KEY", original_key)
+        self.addCleanup(self.delete_test_key, TEST_RECOVERY_KEY)
+        work = r"C:\Jobs\.draft.0123456789abcdef0123456789abcdef.work.docx"
+        saved = "D:\\論文\\.草稿.fedcba9876543210fedcba9876543210.tmp.docx"
+        entries = {
+            "177B8E80": work,                      # the job's working copy: removed
+            "21C4A000": saved.upper(),             # the job's SaveAs2 target, other case: removed
+            "0A0B0C0D": r"C:\Research\Mine.docx",  # the user's own document: kept
+            "5E5E5E5E": work,                      # same path, but present before the job: kept
+        }
+        for name, path in entries.items():
+            # The layout measured on Word 16.0: three 32-bit fields, then the UTF-16 path.
+            blob = bytes.fromhex("04000000bc430000d8000000") + path.encode("utf-16-le") + b"\x00\x00"
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"{TEST_RECOVERY_KEY}\\{name}") as key:
+                winreg.SetValueEx(key, name, 0, winreg.REG_BINARY, blob)
+        removed = self.session.clear_document_recovery({work, saved}, keep={"5E5E5E5E"})
+        self.assertEqual(sorted(removed), ["177B8E80", "21C4A000"])
+        self.assertEqual(self.session.document_recovery_entries(), {"0A0B0C0D", "5E5E5E5E"})
+        self.assertEqual(self.session.clear_document_recovery(set(), keep=set()), [])
+
+    @staticmethod
+    def delete_test_key(key: str = TEST_REGISTRY_KEY) -> None:
+        import winreg
+
+        parent = key.rsplit("\\", 1)[0]
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
+                names = [winreg.EnumKey(handle, index) for index in range(winreg.QueryInfoKey(handle)[0])]
+            for name in names:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, f"{key}\\{name}")
+        except FileNotFoundError:
+            pass
+        for path in (key, parent):
             try:
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
             except FileNotFoundError:
                 pass
+            except PermissionError:
+                break  # the parent still holds the other test's key
 
 
 if __name__ == "__main__":
