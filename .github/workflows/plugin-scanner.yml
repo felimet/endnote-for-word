@@ -27,7 +27,7 @@ jobs:
 
       # The action verifies the pinned scanner wheel's SHA-256 and PyPI provenance before install.
       - name: Scan plugin
-        uses: hashgraph-online/ai-plugin-scanner-action@d777b580805f6fadb19a03f84daf0974c53c6d38 # v1.2.786
+        uses: hashgraph-online/ai-plugin-scanner-action@59f2f1867207d2751c373fafbd1a9b7a4a23377f # v1.2.804
         with:
           plugin_dir: "."
           min_score: 80
