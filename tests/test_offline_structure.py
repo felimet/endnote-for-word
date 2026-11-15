@@ -12,6 +12,7 @@ field, so the nested fields must be subtracted.
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import unittest
@@ -273,14 +274,44 @@ def text_run_xml(text: str) -> str:
     return f'<w:r><w:t xml:space="preserve">{escape(text)}</w:t></w:r>'
 
 
-def field_xml(code: str, result: str = "", nested: str = "", split_code: bool = False) -> str:
+def table_xml(*rows: str) -> str:
+    """Return a one-column borderless table with one row per paragraph XML string.
+
+    This is the usual layout of a figure with its caption in the row below it.
+    """
+    nil = '<w:{0} w:val="nil"/>'
+    borders = "".join(nil.format(side) for side in ("top", "left", "bottom", "right", "insideH", "insideV"))
+    cells = "".join(
+        f'<w:tr><w:tc><w:tcPr><w:tcW w:w="9000" w:type="dxa"/></w:tcPr>{row}</w:tc></w:tr>'
+        for row in rows
+    )
+    return (
+        f'<w:tbl><w:tblPr><w:tblBorders>{borders}</w:tblBorders></w:tblPr>'
+        f'<w:tblGrid><w:gridCol w:w="9000"/></w:tblGrid>{cells}</w:tbl>'
+    )
+
+
+def field_xml(
+    code: str,
+    result: str = "",
+    nested: str = "",
+    split_code: bool = False,
+    data: bytes | None = None,
+) -> str:
     """Return the run sequence for one complex Word field.
 
     ``nested`` is raw run XML inserted between the field code and the separator, which
     is how EndNote stores an ``ADDIN EN.CITE.DATA`` payload inside an ``ADDIN EN.CITE``
     field. ``split_code`` reproduces Word splitting one code across several
-    ``w:instrText`` runs.
+    ``w:instrText`` runs. ``data`` becomes the field's ``w:fldData``, where EndNote keeps
+    that large payload instead of in the field code.
     """
+    begin = '<w:fldChar w:fldCharType="begin"/>'
+    if data is not None:
+        # Wrapped like Word writes it; Word misreads one unwrapped line at some lengths.
+        encoded = base64.b64encode(data).decode("ascii")
+        wrapped = "".join(encoded[start : start + 76] + "\r\n" for start in range(0, len(encoded), 76))
+        begin = f'<w:fldChar w:fldCharType="begin"><w:fldData xml:space="preserve">{wrapped}</w:fldData></w:fldChar>'
     if split_code and len(code) >= 3:
         third = max(1, len(code) // 3)
         chunks = [code[:third], code[third : third * 2], code[third * 2 :]]
@@ -291,7 +322,7 @@ def field_xml(code: str, result: str = "", nested: str = "", split_code: bool = 
         for chunk in chunks
     )
     return (
-        '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+        f"<w:r>{begin}</w:r>"
         + instructions
         + nested
         + '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'

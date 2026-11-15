@@ -33,6 +33,7 @@ from test_offline_structure import (  # noqa: E402  (path is set up above)
     paragraph_xml,
     read_layout_style,
     read_library_record_ids,
+    table_xml,
     text_run_xml,
     write_minimal_docx,
 )
@@ -145,13 +146,16 @@ class McpLiveEndToEndTest(unittest.TestCase):
             )
         ]
         for citation in self.manifest["citations"]:
-            paragraphs.append(
-                paragraph_xml(
-                    text_run_xml(f"Citation {citation['id']} appears here "),
-                    text_run_xml(citation["marker"]),
-                    text_run_xml(" and the sentence ends."),
-                )
+            paragraph = paragraph_xml(
+                text_run_xml(f"Citation {citation['id']} appears here "),
+                text_run_xml(citation["marker"]),
+                text_run_xml(" and the sentence ends."),
             )
+            # A marker in a figure caption cell once hung the marker search; keep one there.
+            if citation["id"] == "merged":
+                paragraph = table_xml(paragraph_xml(text_run_xml("[figure]")), paragraph)
+            paragraphs.append(paragraph)
+        paragraphs.append(paragraph_xml(text_run_xml("End of the draft.")))
         return write_minimal_docx(self.workspace / "input.docx", "".join(paragraphs))
 
     def test_render_validate_and_restyle(self) -> None:

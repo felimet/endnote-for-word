@@ -61,6 +61,72 @@ $captured = Invoke-HiddenProcess -Executable $Python -Arguments $arguments
 """
 
 
+# Word hands a field's w:fldData back as raw bytes packed two per UTF-16 character, lone
+# surrogates included; the harness packs a payload file the same way, without any encoder,
+# and decodes it with the bridge's own helper.
+FIELD_DATA_HARNESS = r"""
+param([Parameter(Mandatory)][string]$Bridge, [Parameter(Mandatory)][string]$Payload)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+function Write-Log { param([string]$Level, [string]$Message) [Console]::Error.WriteLine("[$Level] $Message") }
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Bridge, [ref]$null, [ref]$null)
+$definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-FieldDataText' }, $true)
+Invoke-Expression $definition.Extent.Text
+$bytes = [IO.File]::ReadAllBytes($Payload)
+$units = New-Object char[] ($bytes.Length / 2)
+[Buffer]::BlockCopy($bytes, 0, $units, 0, $bytes.Length)
+$packed = New-Object string (, $units)
+[ordered]@{
+    text  = Get-FieldDataText -Field ([pscustomobject]@{ Data = $packed }) -Label 'packed'
+    empty = Get-FieldDataText -Field ([pscustomobject]@{ Data = '' }) -Label 'empty'
+} | ConvertTo-Json -Compress
+"""
+
+
+# Find-UniqueMarkerRange against stand-ins for Word's Range and Find: one Find re-matches the
+# same hit forever, the other matches a new hit every time. Both must end in a named error.
+MARKER_GUARD_HARNESS = r"""
+param([Parameter(Mandatory)][string]$Bridge)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+function Write-Log { param([string]$Level, [string]$Message) [Console]::Error.WriteLine("[$Level] $Message") }
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Bridge, [ref]$null, [ref]$null)
+foreach ($name in @('Release-ComObject', 'Find-UniqueMarkerRange')) {
+    $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    Invoke-Expression $definition.Extent.Text
+}
+foreach ($variable in @('WdFindStop', 'WdCollapseEnd', 'MarkerSearchIterationLimit')) {
+    $assignment = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq ('$script:' + $variable) }, $true)
+    Invoke-Expression $assignment.Extent.Text
+}
+function New-FakeDocument {
+    param([bool]$Advance)
+    $range = [pscustomobject]@{ Start = 10; End = 20; Advance = $Advance }
+    $find = [pscustomobject]@{ Text = ''; Forward = $true; Wrap = 0; MatchWildcards = $false; Range = $range }
+    $find | Add-Member -MemberType ScriptMethod -Name ClearFormatting -Value { }
+    $find | Add-Member -MemberType ScriptMethod -Name Execute -Value {
+        if ($this.Range.Advance) { $this.Range.Start = $this.Range.End; $this.Range.End = $this.Range.Start + 10 }
+        else { $this.Range.Start = 10; $this.Range.End = 20 }
+        return $true
+    }
+    $range | Add-Member -MemberType NoteProperty -Name Find -Value $find
+    $range | Add-Member -MemberType ScriptMethod -Name Collapse -Value { param($Direction) $this.Start = $this.End }
+    return [pscustomobject]@{ Content = [pscustomobject]@{ Duplicate = $range } }
+}
+$result = [ordered]@{}
+foreach ($case in @([pscustomobject]@{ name = 'stuck'; advance = $false }, [pscustomobject]@{ name = 'endless'; advance = $true })) {
+    $script:Document = New-FakeDocument -Advance $case.advance
+    try {
+        $null = Find-UniqueMarkerRange -Marker ('{{CITE:' + $case.name + '}}')
+        $result[$case.name] = 'returned'
+    }
+    catch { $result[$case.name] = $_.Exception.Message }
+}
+$result | ConvertTo-Json -Compress
+"""
+
+
 def available_hosts() -> list[str]:
     return [path for path in (shutil.which(name) for name in POWERSHELL_HOSTS) if path]
 
@@ -132,6 +198,47 @@ class BridgeRuntimeTests(unittest.TestCase):
                 self.assertEqual(result["exit_code"], 0)
                 self.assertEqual(result["stdout"], "child-done")
                 self.assertEqual(result["stderr_length"], CHILD_STDERR_BYTES)
+
+    def test_field_data_is_decoded_to_the_utf8_endnote_payload(self) -> None:
+        # An Arabic surname starting at an odd byte offset packs into lone UTF-16 surrogates,
+        # and the odd total length makes EndNote pad the payload with one NUL.
+        surname = "عبدالله"
+        xml = (
+            f"<EndNote><Cite><Author>{surname}</Author><Year>2025</Year><RecNum>24</RecNum><record>"
+            f"<rec-number>24</rec-number><author>{surname}, A.</author><author>Müller, H</author>"
+            "</record></Cite></EndNote>"
+        )
+        data = xml.encode("utf-8")
+        self.assertEqual(len(data) % 2, 1)
+        encoded_surname = surname.encode("utf-8")
+        offsets = [index for index in range(len(data)) if data.startswith(encoded_surname, index)]
+        self.assertEqual([offset % 2 for offset in offsets], [1, 1])
+        payload = self.workspace / "field-data.bin"
+        payload.write_bytes(data + b"\x00")
+        harness = self.workspace / "field-data-harness.ps1"
+        harness.write_text(FIELD_DATA_HARNESS, encoding="utf-8-sig")
+        for host in self.hosts:
+            with self.subTest(host=Path(host).name):
+                completed = run_host(host, ["-File", str(harness), "-Bridge", str(BRIDGE), "-Payload", str(payload)])
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(last_json_line(completed), {"text": xml, "empty": ""})
+
+    def test_marker_search_fails_naming_the_marker_when_find_cannot_finish(self) -> None:
+        harness = self.workspace / "marker-guard-harness.ps1"
+        harness.write_text(MARKER_GUARD_HARNESS, encoding="utf-8-sig")
+        for host in self.hosts:
+            with self.subTest(host=Path(host).name):
+                completed = run_host(host, ["-File", str(harness), "-Bridge", str(BRIDGE)])
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                result = last_json_line(completed)
+                self.assertEqual(
+                    result["stuck"],
+                    "Word Find did not advance past character 20 while searching for the marker: {{CITE:stuck}}",
+                )
+                self.assertEqual(
+                    result["endless"],
+                    "Marker search stopped after 1000 matches without reaching the end of the document: {{CITE:endless}}",
+                )
 
     def test_unc_paths_resolve_to_plain_file_system_paths(self) -> None:
         resolved = str(self.workspace.resolve())

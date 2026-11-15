@@ -105,10 +105,12 @@ The parent field remains the citation. The `ADDIN EN.CITE.DATA` field is its pay
 carrier and is never a citation in its own right. Consequences that the code must respect:
 
 - Counting: subtract the `ADDIN EN.CITE.DATA` fields. See section 6.
-- Validation gate 5: when a manifest record's `<rec-number>` is not found in the parent
-  field's code, it must be looked for in the nested field's own code text. Searching only
-  parent fields produces false failures on exactly the documents that are hardest to
-  reproduce.
+- Validation gate 5: the moved payload is not in any field code. Both fields carry it as
+  binary field data (`w:fldData` in the DOCX, `Field.Data` through Word COM, where the
+  UTF-8 bytes arrive packed two per UTF-16 character and NUL-padded to an even length).
+  The bridge decodes that data and matches `<rec-number>` and the author against it.
+  Searching only field code text produces false failures on exactly the documents that
+  are hardest to reproduce.
 - Predictability: the spike observed the split on the merged citation and not on the single
   citation, but the build spec states only that the split happens when the payload is
   large. It gives no size threshold, so never assert on how many
