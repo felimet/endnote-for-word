@@ -232,6 +232,9 @@ $script:LibraryScriptPath = Join-Path $PSScriptRoot 'endnote_library.py'
 # write a binary .doc payload under the mandatory .docx extension.
 $script:WdFormatXmlDocument = 12   # WdSaveFormat.wdFormatXMLDocument
 $script:WdFindStop = 0             # WdFindWrap.wdFindStop
+$script:WdCollapseEnd = 0          # WdCollapseDirection.wdCollapseEnd
+# A marker must occur once, so a search that loops this often is stuck, not counting.
+$script:MarkerSearchIterationLimit = 1000
 $script:WdDoNotSaveChanges = 0     # WdSaveOptions.wdDoNotSaveChanges
 $script:WdSaveChanges = -1         # WdSaveOptions.wdSaveChanges
 $script:WordAlertsNone = 0         # WdAlertLevel.wdAlertsNone
@@ -1847,27 +1850,59 @@ function Get-FieldResultText {
     }
 }
 
+function Get-FieldDataText {
+    param(
+        [Parameter(Mandatory)]$Field,
+        [Parameter(Mandatory)][string]$Label
+    )
+    # A large traveling library payload is not in the field code at all: EndNote stores it as
+    # the field's binary data (w:fldData). Word returns those bytes packed two per UTF-16
+    # character; they are UTF-8 <EndNote> XML, padded with NUL to an even length.
+    $data = ''
+    try { $data = [string]$Field.Data }
+    catch {
+        Write-Log -Level WARN -Message "Could not read the data of $Label`: $($_.Exception.Message)"
+        return ''
+    }
+    if ($data.Length -eq 0) { return '' }
+    # Copied bytewise: Encoding.Unicode would turn the lone surrogate that an Arabic-script UTF-8
+    # lead byte at an odd offset forms into U+FFFD and lose the author name.
+    $bytes = New-Object byte[] ($data.Length * 2)
+    [Buffer]::BlockCopy($data.ToCharArray(), 0, $bytes, 0, $bytes.Length)
+    return [Text.Encoding]::UTF8.GetString($bytes).TrimEnd([char]0)
+}
+
 function Find-UniqueMarkerRange {
     param([Parameter(Mandatory)][string]$Marker)
     $search = $script:Document.Content.Duplicate
+    $find = $null
     # Local name deliberately differs from the automatic $Matches variable.
     $hits = @()
     try {
-        while ($search.Start -lt $search.End) {
-            $find = $search.Find
-            $find.ClearFormatting()
-            $find.Text = $Marker
-            $find.Forward = $true
-            $find.Wrap = $script:WdFindStop
-            $find.MatchWildcards = $false
-            if (-not $find.Execute()) { break }
+        $find = $search.Find
+        $find.ClearFormatting()
+        $find.Text = $Marker
+        $find.Forward = $true
+        $find.Wrap = $script:WdFindStop
+        $find.MatchWildcards = $false
+        while ($find.Execute()) {
+            if ($hits.Count -ge $script:MarkerSearchIterationLimit) {
+                throw "Marker search stopped after $($script:MarkerSearchIterationLimit) matches without reaching the end of the document: $Marker"
+            }
+            # Collapsing is what advances the search. The former SetRange(hit end, document
+            # end) re-matched a marker in a table cell forever, because Word widens a range
+            # that starts in a cell and ends outside the table to whole rows.
+            if ($hits.Count -gt 0 -and $search.Start -lt $hits[-1].end) {
+                throw "Word Find did not advance past character $($hits[-1].end) while searching for the marker: $Marker"
+            }
             $hits += [ordered]@{ start = $search.Start; end = $search.End }
-            $next = $search.End
-            $search.SetRange($next, $script:Document.Content.End)
-            Release-ComObject $find
+            $search.Collapse($script:WdCollapseEnd)
         }
     }
-    finally { Release-ComObject $search }
+    finally {
+        Release-ComObject $find
+        Release-ComObject $search
+    }
     if ($hits.Count -ne 1) {
         throw "Marker must occur exactly once; found $($hits.Count): $Marker"
     }
@@ -1893,11 +1928,13 @@ function Get-CitationFields {
                 Write-Log -Level WARN -Message "Could not read the code of field ${index}: $($_.Exception.Message)"
                 continue
             }
+            # Citation codes carry the field data too, so the record and author checks see the
+            # payload whether EndNote kept it inline or moved it into w:fldData.
             if ($code -match $script:CitationDataFieldPattern) {
-                $citationDataCodes.Add($code)
+                $citationDataCodes.Add($code + (Get-FieldDataText -Field $field -Label "citation data field $index"))
             }
             elseif ($code -match $script:CitationFieldPattern) {
-                $citationCodes.Add($code)
+                $citationCodes.Add($code + (Get-FieldDataText -Field $field -Label "citation field $index"))
                 $citationResults.Add((Get-FieldResultText -Field $field -Label "citation field $index"))
             }
             elseif ($code -match $script:BibliographyFieldPattern) {

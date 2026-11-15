@@ -385,7 +385,7 @@ Always run `validate` afterwards. It applies ten gates, and any failure sets
 6. Every manifest `rec_number` appears in some EN.CITE traveling library XML as
    `<rec-number>N</rec-number>`, and its `author` surname appears in the same field's XML.
    A record whose payload was moved into a nested `ADDIN EN.CITE.DATA` field is matched
-   against that nested field's own code text.
+   against the decoded field data (`w:fldData`), because neither field code holds it.
 7. Every citation requesting `display: author-year` has a native field result containing
    its author surname.
 8. Document text contains none of `Error!`, `Reference source not found`, `{Citation}` or

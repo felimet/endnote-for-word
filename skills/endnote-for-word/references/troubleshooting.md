@@ -344,7 +344,7 @@ citation_count = count(codes starting with "ADDIN EN.CITE")
 counted separately as `hyperlink_fields` and are never citations.
 
 For gate 5, a record whose payload was moved into a nested `ADDIN EN.CITE.DATA` field must be
-matched against that nested field's own code text, not against the parent field.
+matched against the decoded field data (`w:fldData`), because neither field code holds it.
 
 ## Recovery rules
 

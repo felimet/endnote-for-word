@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A `{{CITE:id}}` marker inside a table cell, such as a figure caption row, no longer hangs
+  `render` until the job times out. The marker search now collapses each hit and searches on;
+  its old `SetRange` to the document end was widened by Word to whole table rows and matched
+  the same marker forever. A search that stops advancing or exceeds 1000 matches fails with
+  an error naming the marker.
+- `validate` no longer reports a citation whose payload EndNote moved into `ADDIN EN.CITE.DATA`
+  as absent from every traveling library payload, nor its `author-year` display as missing.
+  That payload lives in the field data (`w:fldData`), not the field code, and is now decoded
+  and checked.
+
 ## [1.5.1] - 2026-10-14
 
 ### Fixed
