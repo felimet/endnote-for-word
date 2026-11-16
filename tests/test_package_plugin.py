@@ -82,7 +82,7 @@ class PackagePluginTests(unittest.TestCase):
 
             self.assertEqual(digest, package_plugin.package_skill(root, output))
             sidecar = output.with_name(output.name + ".sha256")
-            self.assertEqual(sidecar.read_text(encoding="ascii"), f"{digest}  {output.name}\n")
+            self.assertEqual(sidecar.read_bytes(), f"{digest}  {output.name}\n".encode("ascii"))
             with zipfile.ZipFile(output) as archive:
                 self.assertEqual(
                     sorted(archive.namelist()),
