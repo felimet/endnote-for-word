@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The `.sha256` files that `scripts/package_plugin.py` writes now end in LF on Windows too, so
+  `sha256sum -c` on Linux or macOS accepts them. The CR in the old CRLF ending was read as part
+  of the file name, and the check failed although the digest was right.
+
 ## [1.5.2] - 2026-11-16
 
 ### Fixed

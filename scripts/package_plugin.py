@@ -94,7 +94,8 @@ def _archive_tree(source: Path, output: Path, required: list[Path], kind: str) -
                     compresslevel=9,
                 )
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
-    sidecar.write_text(f"{digest}  {output.name}\n", encoding="ascii")
+    # LF on every OS: `sha256sum -c` reads a CR as part of the file name.
+    sidecar.write_text(f"{digest}  {output.name}\n", encoding="ascii", newline="\n")
     return digest
 
 
