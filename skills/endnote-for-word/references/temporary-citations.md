@@ -101,7 +101,8 @@ opened at all:
    matching the manifest `author` case insensitively and accent tolerantly, and must have
    a matching `year` and bare DOI.
 3. The DOI must resolve successfully through the official doi.org Proxy API. A target marked
-   `"no_doi": true` skips both DOI checks; its record must instead have an empty DOI field.
+   `"no_doi": true` skips both DOI checks; its record must instead have an empty DOI field
+   and no DOI in its URL or notes.
 4. The precheck reports every mismatch, not just the first, so a manifest can be fixed in
    one pass.
 

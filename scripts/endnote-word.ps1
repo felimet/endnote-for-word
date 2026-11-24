@@ -210,15 +210,21 @@ $script:RecordNumberElementFormat = '<rec-number>{0}</rec-number>'
 $script:DoiPattern = '^10\.\d{4,9}/[!-~]+$'
 $script:DoiResolverPrefix = 'https://doi.org/'
 $script:DuplicateDoiResolverPattern = '(?i)https://doi\.org/(?:https?://(?:dx\.)?doi\.org/|doi:\s*)'
-# A 'doi:' label not followed by a DOI link. EndNote's template rules (docs.endnote.com, Rules
+# A 'doi:' label left without a DOI link. EndNote's template rules (docs.endnote.com, Rules
 # for Working with Style Templates) drop text attached to an empty field but always print text
 # set off by a space, so 'doi: https://doi.org/DOI' leaves 'doi:' behind for a record without a
 # DOI unless the label is tied to the field with Link Adjacent Text. Not measured on EndNote 21.
-$script:DanglingDoiResolverPattern = '(?i)\bdoi:(?!\s*https://doi\.org/10\.)'
+# Only such leftovers match: a label starting a token, followed by nothing but punctuation up to
+# the end of the entry, or by a link other than https://doi.org/10. A 'doi:' inside a token
+# (10.1000/abc-doi:5, urn:doi:) or before ordinary words (a title) is left alone.
+$script:DanglingDoiResolverPattern = '(?i)(?<![^\s(\[])doi:(?=[^\r\n\w]*(?:[\r\n]|$)|\s*(?!https://doi\.org/10\.)https?://)'
 # The first non-empty text of a traveling-library record's DOI field, inside any style wrapper.
 # Measured on EndNote 21 output: a record with a DOI carries <electronic-resource-num>10....</...>,
 # a web page without one carries no such element.
 $script:TravelingRecordDoiPattern = '(?i)<electronic-resource-num>(?:<[^/>][^>]*>|\s)*([^<\s][^<]*)'
+# A DOI left in a record's <url> or <notes> (bare, behind doi: or in a link); DOI_LIKE_PATTERN in
+# endnote_library.py. Group 1 is the element, group 2 the DOI.
+$script:TravelingRecordDoiElsewherePattern = '(?is)<(url|notes)>(?:(?!</\1>).)*?\b(10\.\d{4,9}/[^\s<>"]+)'
 
 # Manifest schema v1.
 $script:ManifestSchemaVersion = 1
@@ -1525,11 +1531,14 @@ function Test-NativeHelpers {
 
 function Get-EndNoteLibraryWindowTitles {
     # Titles of every EndNote library window, in front or behind, or $null without the interop.
-    # Every open library has its own window (measured, see endnote_session.py).
+    # Every open library has its own window (measured, see endnote_session.py). Other Afx: windows
+    # (a hidden com.endnote.async_tasks on EndNote 21.5, measured) are dropped by the .enl filter,
+    # as library_windows in endnote_session.py does.
     if (-not (Test-NativeHelpers)) { return $null }
     $processIds = New-Object System.Collections.Generic.List[int]
     foreach ($process in @(Get-Process -Name $script:EndNoteProcessName -ErrorAction SilentlyContinue)) { $processIds.Add([int]$process.Id) }
-    return , ([EndNoteForWordAgent.TopLevelWindows]::GetTitles($processIds.ToArray(), $script:LibraryWindowClassPrefix))
+    $titles = [EndNoteForWordAgent.TopLevelWindows]::GetTitles($processIds.ToArray(), $script:LibraryWindowClassPrefix)
+    return , [string[]]@($titles | Where-Object { $_.EndsWith($script:LibraryExtension, [StringComparison]::OrdinalIgnoreCase) })
 }
 
 function Get-FileHolderProcessIds {
@@ -1578,8 +1587,11 @@ function Resolve-ImportTargetConfirmation {
         [AllowNull()][AllowEmptyCollection()][string[]]$LibraryWindowTitles
     )
     $fileName = [IO.Path]::GetFileName($LibraryFile)
-    # EndNote titles the window '<product> - <file>', and just '<file>' after a CWYW job.
-    $showsFile = { param([string]$Title) $Title -ieq $fileName -or $Title.EndsWith(' - ' + $fileName, [StringComparison]::OrdinalIgnoreCase) }
+    # EndNote titles the window '<product> - <file>', and just '<file>' after a CWYW job. The
+    # product is 'EndNote' and an optional version ('EndNote 21'); matching the whole title keeps
+    # 'EndNote 21 - Project - Lib.enl' from passing for Lib.enl.
+    $productTitle = '(?i)^' + [regex]::Escape($script:EndNoteProcessName) + '(?: \S+)? - ' + [regex]::Escape($fileName) + '$'
+    $showsFile = { param([string]$Title) $Title -ieq $fileName -or $Title -match $productTitle }
     $sameName = 0
     foreach ($libraryTitle in @($LibraryWindowTitles)) {
         if ($null -ne $libraryTitle -and (& $showsFile $libraryTitle)) { $sameName++ }
@@ -2343,9 +2355,14 @@ function Add-TravelingLibraryValidationProblems {
                 $start = $matched.IndexOf($element, [StringComparison]::OrdinalIgnoreCase)
                 $end = $matched.IndexOf('</record>', $start, [StringComparison]::OrdinalIgnoreCase)
                 if ($end -lt 0) { $end = $matched.Length }
-                $recordDoi = [regex]::Match($matched.Substring($start, $end - $start), $script:TravelingRecordDoiPattern)
+                $record = $matched.Substring($start, $end - $start)
+                $recordDoi = [regex]::Match($record, $script:TravelingRecordDoiPattern)
+                $elsewhere = [regex]::Match($record, $script:TravelingRecordDoiElsewherePattern)
                 if ($recordDoi.Success) {
                     $Errors.Add("Citation '$citationId': rec-number $recNumber is marked no_doi, but its traveling library record carries the DOI '$($recordDoi.Groups[1].Value.Trim())'. Remove no_doi, cite that DOI and make the style print it.")
+                }
+                elseif ($elsewhere.Success) {
+                    $Errors.Add("Citation '$citationId': rec-number $recNumber is marked no_doi, but its traveling library record carries the DOI '$($elsewhere.Groups[2].Value)' in <$($elsewhere.Groups[1].Value)>. Move it into the record's DOI field in EndNote, remove no_doi and cite the target with doi instead.")
                 }
             }
         }

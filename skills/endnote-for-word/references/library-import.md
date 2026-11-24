@@ -270,8 +270,9 @@ python scripts\endnote_library.py precheck --library "<LIBRARY>.enl" --manifest 
 `precheck` verifies, for every target, that the record exists, is not in the trash, that its
 first author surname matches the manifest `author` case-insensitively and accent-tolerantly,
 that its year and bare DOI match, and that the DOI resolves through doi.org. A target marked
-`"no_doi": true` replaces the two DOI checks with one: the record's DOI field must be empty,
-otherwise precheck reports `library_has_doi` and the DOI belongs in the target. It reports every problem it finds, not just the first one, so a
+`"no_doi": true` replaces the two DOI checks with one: the record's DOI field must be empty
+and its URL and notes must hold no DOI, otherwise precheck reports `library_has_doi` and the
+DOI belongs in the record's DOI field and in the target. It reports every problem it finds, not just the first one, so a
 manifest with three bad targets takes one round trip to fix rather than three.
 
 This is the step that prevents the "select matching reference" modal dialog described in

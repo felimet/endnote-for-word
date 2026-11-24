@@ -14,14 +14,16 @@ All notable changes to this project are documented in this file. The format foll
   type 16), a patent (type 15), an extension article or a conference paper without one, through
   an explicit `"no_doi": true`. DOI stays required by default. `precheck` still requires the
   record to exist, to be live and to match the first-author surname and year, reports
-  `library_has_doi` when the record does have a DOI, and rejects `no_doi` together with `doi`
-  or as a non-boolean. Render takes these targets in the same pass as DOI targets, so the
+  `library_has_doi` when the record does have a DOI, in its DOI field or left in its URL or
+  notes, and rejects `no_doi` together with `doi` or as a non-boolean. Render takes these targets in the same pass as DOI targets, so the
   author-year display mapping by field order stays aligned, and reports `no_doi_targets`.
   Validation keeps every gate and skips the visible DOI link of a `no_doi` target only when the
-  record's traveling-library XML in the document carries no DOI (`<electronic-resource-num>`),
-  so a manifest edit cannot switch the gate off for a record that has one.
-- Validation fails a bibliography in which a `doi:` label is not followed by
-  `https://doi.org/10.`. Under EndNote's documented template rules, text attached to an empty
+  record's traveling-library XML in the document carries no DOI (`<electronic-resource-num>`,
+  `<url>`, `<notes>`), so a manifest edit cannot switch the gate off for a record that has one.
+- Validation fails a bibliography with a leftover `doi:` label: one that starts a word and is
+  followed by nothing but punctuation up to the end of the entry, or by a link other than
+  `https://doi.org/10.`. A `doi:` inside a DOI (`10.1000/abc-doi:5`), a URN or a title passes.
+  Under EndNote's documented template rules, text attached to an empty
   field drops out but text set off by a space always prints, so a style whose `doi:` label is
   not tied to the DOI field with Link Adjacent Text leaves a bare `doi:` for a `no_doi` record.
   That output has not been measured on EndNote 21.
@@ -39,16 +41,19 @@ All notable changes to this project are documented in this file. The format foll
   product prefix after a CWYW job. The target is now confirmed when an EndNote main window shows
   the file name, the same process holds `<library>.Data\sdb\sdb.eni` open, as Windows
   Restart Manager reports, and no other open library window carries the same file name
-  (`import_target_confirmed_by: open_handle`). Only when Restart Manager cannot answer does
+  (`import_target_confirmed_by: open_handle`). A title shows the file only when it is exactly
+  `<file>` or `EndNote <version> - <file>`, and only `Afx:` windows titled `*.enl` count as
+  library windows, not the hidden `com.endnote.async_tasks`. Only when Restart Manager cannot answer does
   `File1` naming the exact path still confirm it (`recent_library`). Neither the registry nor a
   library file is written, and a timeout now names the windows, the open library windows, the
   holding processes and the recent library it saw.
 - EndNote's start-up marketing notice `Holiday Sale: Save 25% when you upgrade to the new
   EndNote!` no longer blocks a job until it times out. A short allowlist of marketing titles
-  (`Holiday Sale*`, `*upgrade to the new EndNote*`) is answered with Cancel, else Close, which
-  changes no preference, and listed under `notices_dismissed`; Ignore This, Learn More... and
-  any purchase or sign-in button are never pressed, and every other dialog is still reported
-  under `attention`.
+  (`Holiday Sale*`, `*upgrade to the new EndNote*`) with exactly the measured buttons
+  Learn More..., Cancel and Ignore This is answered with Cancel, which changes no preference,
+  and listed under `notices_dismissed`; Ignore This, Learn More... and any purchase or sign-in
+  button are never pressed, and every other dialog, a listed title with other buttons included,
+  is still reported under `attention`.
 - The `.sha256` files that `scripts/package_plugin.py` writes now end in LF on Windows too, so
   `sha256sum -c` on Linux or macOS accepts them. The CR in the old CRLF ending was read as part
   of the file name, and the check failed although the digest was right.

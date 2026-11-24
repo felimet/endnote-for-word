@@ -306,7 +306,7 @@ TOOLS: list[dict[str, Any]] = [
             "must match. Every target must have a matching bare DOI, and every DOI must resolve through "
             "the official doi.org Proxy REST API; a target for a record without a DOI (web page, patent, "
             "extension article) must say so with \"no_doi\": true, and the record's DOI field must then be "
-            "empty. A missing record makes EndNote open a blocking "
+            "empty and its URL and notes hold no DOI. A missing record makes EndNote open a blocking "
             "'select matching reference' dialog, so this check is mandatory before render. Read-only; "
             "reports every problem, not just the first."
         ),

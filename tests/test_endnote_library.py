@@ -173,6 +173,11 @@ NO_DOI_RECORDS = [
      "title": "Synthetic patent without a DOI"},
     {"id": 3, "trash_state": 0, "reference_type": 17, "author": "Wang, Hao", "year": "2022",
      "title": "Synthetic journal article with a DOI", "electronic_resource_number": "10.0000/fixture.0103"},
+    # The DOI sits outside the DOI field, where some imports leave it.
+    {"id": 4, "trash_state": 0, "reference_type": 17, "author": "Huang, Yu", "year": "2023",
+     "title": "Synthetic article with its DOI in the URL", "url": "https://doi.org/10.0000/fixture.0104"},
+    {"id": 5, "trash_state": 0, "reference_type": 17, "author": "Liu, Jie", "year": "2020",
+     "title": "Synthetic article with its DOI in the notes", "notes": "Imported record. doi:10.0000/fixture.0105"},
 ]
 
 XML_EXPORT = """<?xml version="1.0" encoding="UTF-8"?>
@@ -667,6 +672,18 @@ class EndNoteLibraryCliTests(unittest.TestCase):
             [(problem["problem"], problem.get("actual")) for problem in result["problems"]],
             [("library_has_doi", "10.0000/fixture.0103")],
         )
+
+    def test_no_doi_target_is_rejected_when_its_doi_sits_in_another_field(self) -> None:
+        result = self.precheck_no_doi("no-doi-doi-elsewhere.json", [
+            {"rec_number": 4, "author": "Huang", "year": 2023, "no_doi": True},
+            {"rec_number": 5, "author": "Liu", "year": 2020, "no_doi": True},
+        ])
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(
+            [(problem["problem"], problem.get("field"), problem.get("actual")) for problem in result["problems"]],
+            [("library_has_doi", "url", "10.0000/fixture.0104"), ("library_has_doi", "notes", "10.0000/fixture.0105")],
+        )
+        self.assertIn("Move it into the record's DOI field", result["problems"][0]["message"])
 
     def test_no_doi_target_still_checks_the_record_identity(self) -> None:
         result = self.precheck_no_doi("no-doi-identity.json", [

@@ -261,7 +261,8 @@ base name through `list_endnote_styles`.
 
 The validator reads the visible `ADDIN EN.REFLIST` result. It fails when the DOI of any
 manifest target without `no_doi` is not present in the exact form `doi: https://doi.org/<DOI>`,
-when a `doi:` label is not followed by `https://doi.org/10.`, or when it sees a doubled resolver
+when a leftover `doi:` label is followed by nothing or by a link other than
+`https://doi.org/10.`, or when it sees a doubled resolver
 such as `https://doi.org/https://doi.org/<DOI>`. This makes a bad template or a prefixed DOI
 field a hard failure instead of a cosmetic defect.
 

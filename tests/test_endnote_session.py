@@ -40,21 +40,21 @@ class EndNoteSessionTests(unittest.TestCase):
         self.assertFalse(self.session.is_notice("Microsoft Word", buttons))
         self.assertFalse(self.session.is_notice("EndNote 2025 is here!", {"OK"}))
 
-    def test_only_listed_marketing_notices_get_a_safe_button(self) -> None:
-        pick = self.session.marketing_notice_button
+    def test_only_listed_marketing_notices_with_the_measured_buttons_are_notices(self) -> None:
+        notice = self.session.is_notice
         measured = "Holiday Sale: Save 25% when you upgrade to the new EndNote!"
-        # Cancel, never Ignore This: that one changes EndNote's preferences for good.
-        self.assertEqual(pick(measured, {"Learn More...", "Cancel", "Ignore This"}), "Cancel")
-        self.assertIsNone(pick(measured, {"Learn More...", "Ignore This"}))
-        self.assertEqual(pick("Spring offer: upgrade to the new EndNote today", {"Learn More...", "Cancel"}), "Cancel")
-        self.assertEqual(pick("HOLIDAY SALE", {"Learn More...", "Close"}), "Close")
-        # The sales link is never pressed, even when it is the only way out.
-        self.assertIsNone(pick(measured, {"Learn More..."}))
-        self.assertIsNone(pick(measured, {"Buy Now", "Sign In"}))
+        buttons = {"Learn More...", "Cancel", "Ignore This"}
+        self.assertTrue(notice(measured, buttons))
+        self.assertTrue(notice("Spring offer: upgrade to the new EndNote today", buttons))
+        self.assertTrue(notice("HOLIDAY SALE", buttons))
+        # A listed title with any other button set stays with attention.
+        self.assertFalse(notice("Spring offer: upgrade to the new EndNote today", {"Learn More...", "Cancel"}))
+        self.assertFalse(notice("HOLIDAY SALE", {"Learn More...", "Close"}))
+        self.assertFalse(notice(measured, {"Learn More...", "Ignore This"}))
+        self.assertFalse(notice(measured, {"Buy Now", "Sign In"}))
         # Unlisted dialogs stay with attention, whatever their buttons.
-        self.assertIsNone(pick("EndNote 21 Select Matching Reference", {"Cancel"}))
-        self.assertIsNone(pick("Sign in to EndNote", {"Sign In", "Cancel"}))
-        self.assertIsNone(pick("Microsoft Word", {"Learn More...", "Cancel", "Ignore This"}))
+        self.assertFalse(notice("Sign in to EndNote", {"Sign In", "Cancel"}))
+        self.assertFalse(notice("Microsoft Word", buttons))
 
     def test_marketing_notice_is_dismissed_and_other_dialogs_stay_reported(self) -> None:
         window = self.session.Window
@@ -62,11 +62,14 @@ class EndNoteSessionTests(unittest.TestCase):
             window(1, 7, "#32770", "Holiday Sale: Save 25% when you upgrade to the new EndNote!", True, False),
             window(2, 7, "#32770", "EndNote 2025 is here!", True, False),
             window(3, 7, "#32770", "EndNote 21 Select Matching Reference", True, False),
+            # A listed title without the measured button set is not cancelled.
+            window(4, 7, "#32770", "Spring offer: upgrade to the new EndNote today", True, False),
         ]
         buttons = {
             1: [(1, "Learn More...", 11), (2, "Cancel", 12), (3, "Ignore This", 13)],
             2: [(1, "Learn More...", 21), (2, "Cancel", 22), (3, "Ignore This", 23)],
             3: [(1, "&Find", 31), (2, "Cancel", 32)],
+            4: [(1, "Learn More...", 41), (2, "Cancel", 42)],
         }
         clicked: list[int] = []
 
@@ -86,7 +89,7 @@ class EndNoteSessionTests(unittest.TestCase):
         self.assertEqual(clicked, [12, 22])
         self.assertEqual(
             [dialog["title"] for dialog in self.session.blocking_dialogs({7})],
-            ["EndNote 21 Select Matching Reference"],
+            ["EndNote 21 Select Matching Reference", "Spring offer: upgrade to the new EndNote today"],
         )
 
     def test_library_windows_are_matched_by_file_name(self) -> None:

@@ -25,7 +25,8 @@ dialog and blocks the run.
 4. Verify the library file exists together with its sibling `.Data` directory.
 5. Run the read-only manifest precheck. Every target must match its library record, its DOI
    field must be bare, and the DOI must resolve through the official doi.org Proxy API. A
-   target marked `"no_doi": true` must instead point at a record whose DOI field is empty.
+   target marked `"no_doi": true` must instead point at a record whose DOI field is empty
+   and whose URL and notes hold no DOI.
 6. `Start-EndNoteWithLibrary`. When no `EndNote` process owns a main window, start the
    EndNote executable with the library path and poll every 250 ms until a process reports
    `MainWindowHandle -ne 0`. When EndNote is already running, do not start a second
@@ -97,8 +98,8 @@ Direct Export without modifying `sdb.eni` itself.
 The third entry cites a record that has no DOI, here a patent. `"no_doi": true` is the only way
 to omit `doi`, it is set per target, and it is rejected together with a `doi` key. The
 precheck still requires the record to exist, to be live and to match the surname and year, and
-it reports `library_has_doi` when the record does carry a DOI, which then belongs in the
-target. Render handles these targets in the same pass as every other citation, and validation
+it reports `library_has_doi` when the record does carry a DOI, in its DOI field or in its
+URL or notes, which then belongs in the record's DOI field and in the target. Render handles these targets in the same pass as every other citation, and validation
 skips only their visible DOI link.
 
 Save the manifest as UTF-8; a byte order mark is optional. The bridge and the precheck both
@@ -397,9 +398,12 @@ Always run `validate` afterwards. It applies ten gates, and any failure sets
    its `Result.Text` is non empty after trimming.
 5. Every cited DOI is visibly present as `doi: https://doi.org/<DOI>`, and no duplicated
    DOI resolver prefix occurs. A target marked `no_doi` is skipped only while its record in
-   the traveling library XML carries no `<electronic-resource-num>` text; otherwise gate 6
-   fails it. A `doi:` label not followed by `https://doi.org/10.` fails the gate: EndNote
-   printed the style's space-separated label for an empty DOI field.
+   the traveling library XML carries no `<electronic-resource-num>` text and no DOI in its
+   `<url>` or `<notes>`; otherwise gate 6 fails it. A leftover `doi:` label, one that starts a
+   word and is followed by nothing but punctuation up to the end of the entry or by a link
+   other than `https://doi.org/10.`, fails the gate: EndNote printed the style's
+   space-separated label for an empty DOI field. A `doi:` inside a DOI, a URN or a title does
+   not.
 6. Every manifest `rec_number` appears in some EN.CITE traveling library XML as
    `<rec-number>N</rec-number>`, and its `author` surname appears in the same field's XML.
    A record whose payload was moved into a nested `ADDIN EN.CITE.DATA` field is matched

@@ -167,6 +167,17 @@ foreach ($bibliography in $spec.bibliographies.PSObject.Properties) {
     Add-BibliographyValidationProblems -Fields $fields -Manifest $spec.manifest -Errors $errors -Warnings $warnings
     $result[$bibliography.Name] = @($errors)
 }
+foreach ($bibliography in $spec.doiSuffixBibliographies.PSObject.Properties) {
+    $fields = [pscustomobject]@{
+        bibliography_codes          = @('ADDIN EN.REFLIST')
+        bibliography_result_lengths = @($bibliography.Value.Length)
+        bibliography_results        = @($bibliography.Value)
+    }
+    $errors = New-Object System.Collections.Generic.List[string]
+    $warnings = New-Object System.Collections.Generic.List[string]
+    Add-BibliographyValidationProblems -Fields $fields -Manifest $spec.doiSuffixManifest -Errors $errors -Warnings $warnings
+    $result[$bibliography.Name] = @($errors)
+}
 foreach ($payloads in $spec.payloads.PSObject.Properties) {
     $errors = New-Object System.Collections.Generic.List[string]
     $warnings = New-Object System.Collections.Generic.List[string]
@@ -202,6 +213,14 @@ $form.Text = 'EndNote 21 - Probe Library.enl'
 $null = $form.Handle
 $result['own_windows'] = @([EndNoteForWordAgent.TopLevelWindows]::GetTitles([int[]]@($PID), 'WindowsForms'))
 $result['other_class'] = @([EndNoteForWordAgent.TopLevelWindows]::GetTitles([int[]]@($PID), 'Afx:'))
+# A same-class window that is no library, like EndNote 21.5's hidden com.endnote.async_tasks.
+$tasks = New-Object System.Windows.Forms.Form
+$tasks.Text = 'com.endnote.async_tasks'
+$null = $tasks.Handle
+function Get-Process { [CmdletBinding()] param([string]$Name) [pscustomobject]@{ Id = $PID } }
+$script:LibraryWindowClassPrefix = 'WindowsForms'
+$result['library_windows'] = Get-EndNoteLibraryWindowTitles
+$tasks.Dispose()
 $form.Dispose()
 $result | ConvertTo-Json -Compress
 """
@@ -424,13 +443,17 @@ class BridgeFunctionTests(unittest.TestCase):
     def test_manifest_no_doi_opt_in_is_explicit_and_skips_only_the_visible_doi_gate(self) -> None:
         doi_target = {"rec_number": 3, "author": "Wang", "year": 2022, "doi": "10.0000/fixture.0103"}
         no_doi_target = {"rec_number": 1, "author": "Chen", "year": 2024, "no_doi": True}
+        doi_record = ("<EndNote><Cite><Author>Wang</Author><record><rec-number>3</rec-number><contributors><author>Wang, H."
+                      "</author></contributors><electronic-resource-num>10.0000/fixture.0103</electronic-resource-num>"
+                      "</record></Cite></EndNote>")
         spec = {
             "functions": ["Get-OptionalProperty", "Assert-AllowedKeys", "ConvertTo-ManifestInteger",
                           "Assert-CitationText", "Test-NoDoiTarget", "Assert-ManifestTarget",
                           "Add-BibliographyValidationProblems", "Add-TravelingLibraryValidationProblems"],
             "variables": ["AllowedTargetKeys", "NoDoiTargetKey", "DoiPattern", "ForbiddenCitationTextPattern",
                           "DoiResolverPrefix", "DuplicateDoiResolverPattern", "DanglingDoiResolverPattern",
-                          "RecordNumberElementFormat", "TravelingRecordDoiPattern"],
+                          "RecordNumberElementFormat", "TravelingRecordDoiPattern",
+                          "TravelingRecordDoiElsewherePattern"],
             "targets": {
                 "withDoi": doi_target,
                 "noDoi": no_doi_target,
@@ -443,6 +466,11 @@ class BridgeFunctionTests(unittest.TestCase):
                 "bibliography": {"expected": True},
                 "citations": [{"id": "a", "targets": [doi_target]}, {"id": "b", "targets": [no_doi_target]}],
             },
+            # A DOI target whose own suffix holds 'doi:'; DoiPattern accepts it.
+            "doiSuffixManifest": {
+                "bibliography": {"expected": True},
+                "citations": [{"id": "c", "targets": [{**doi_target, "doi": "10.1000/abc-doi:5"}]}],
+            },
             "bibliographies": {
                 "shown": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r[2] M. Chen, Web page, 2024.",
                 "hidden": "[1] H. Wang, Journal, 2022.\r[2] M. Chen, Web page, 2024.",
@@ -454,6 +482,14 @@ class BridgeFunctionTests(unittest.TestCase):
                                "[2] M. Chen, Web page. doi: https://example.org/page (accessed Nov. 1, 2026).",
                 "orphanLabelAtEnd": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
                                     "[2] M. Chen, Web page, 2024, doi: .",
+                "orphanLabelMidList": "[1] M. Chen, Web page, 2024, doi:\r"
+                                      "[2] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.",
+                # 'doi:' inside a token or before ordinary words is no leftover label.
+                "doiInsideTokens": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                                   "[2] M. Chen, Why doi: names persist, Web page, urn:doi:10.1000/abc, 2024.",
+            },
+            "doiSuffixBibliographies": {
+                "doiSuffix": "[1] H. Wang, Journal, doi: https://doi.org/10.1000/abc-doi:5.",
             },
             "payloads": {
                 # Shapes measured in an EndNote 21 document: a DOI record carries
@@ -464,6 +500,26 @@ class BridgeFunctionTests(unittest.TestCase):
                     "<Cite><Author>Chen</Author><record><rec-number>1</rec-number><ref-type name=\"Web Page\">12</ref-type>"
                     "<contributors><author>Chen, M.</author></contributors><electronic-resource-num></electronic-resource-num>"
                     "<language>eng</language></record></Cite></EndNote>",
+                ],
+                # The no_doi record comes first in one merged payload: only its own record is read.
+                "noDoiRecordBeforeDoiRecord": [
+                    "<EndNote><Cite><Author>Chen</Author><record><rec-number>1</rec-number><ref-type name=\"Web Page\">12</ref-type>"
+                    "<contributors><author>Chen, M.</author></contributors><urls><related-urls><url>https://example.org/page</url>"
+                    "</related-urls></urls></record></Cite><Cite><Author>Wang</Author><record><rec-number>3</rec-number>"
+                    "<contributors><author>Wang, H.</author></contributors><urls><related-urls><url>https://doi.org/10.0000/fixture.0103"
+                    "</url></related-urls></urls><electronic-resource-num>10.0000/fixture.0103</electronic-resource-num>"
+                    "</record></Cite></EndNote>",
+                ],
+                "noDoiRecordDoiInUrl": [
+                    doi_record,
+                    "<EndNote><Cite><Author>Chen</Author><record><rec-number>1</rec-number><contributors><author>Chen, M.</author>"
+                    "</contributors><urls><related-urls><url><style face=\"normal\">https://doi.org/10.0000/fixture.0101</style>"
+                    "</url></related-urls></urls></record></Cite></EndNote>",
+                ],
+                "noDoiRecordDoiInNotes": [
+                    doi_record,
+                    "<EndNote><Cite><Author>Chen</Author><record><rec-number>1</rec-number><contributors><author>Chen, M.</author>"
+                    "</contributors><notes>Imported. doi:10.0000/fixture.0101</notes></record></Cite></EndNote>",
                 ],
                 "noDoiRecordHasDoi": [
                     "<EndNote><Cite><Author>Wang</Author><record><rec-number>3</rec-number><contributors><author>Wang, H.</author>"
@@ -478,6 +534,9 @@ class BridgeFunctionTests(unittest.TestCase):
         dangling = ("The bibliography prints a 'doi:' label without 'https://doi.org/<DOI>' after it: '{0}'. Tie the "
                     "output style's 'doi:' label to the DOI field with Link Adjacent Text so it disappears for a "
                     "record without a DOI.")
+        elsewhere = ("Citation 'b': rec-number 1 is marked no_doi, but its traveling library record carries the DOI "
+                     "'10.0000/fixture.0101' in <{0}>. Move it into the record's DOI field in EndNote, remove no_doi "
+                     "and cite the target with doi instead.")
         expected = {
             "withDoi": "accepted",
             "noDoi": "accepted",
@@ -493,7 +552,13 @@ class BridgeFunctionTests(unittest.TestCase):
             "dangling": [dangling.format("doi: https://doi.org/.")],
             "orphanLabel": [dangling.format("doi: https://example.org/page (accessed ")],
             "orphanLabelAtEnd": [dangling.format("doi: .")],
+            "orphanLabelMidList": [dangling.format("doi:\r[2] H. Wang, Journal, doi: https://")],
+            "doiInsideTokens": [],
+            "doiSuffix": [],
             "noDoiRecordClean": [],
+            "noDoiRecordBeforeDoiRecord": [],
+            "noDoiRecordDoiInUrl": [elsewhere.format("url")],
+            "noDoiRecordDoiInNotes": [elsewhere.format("notes")],
             "noDoiRecordHasDoi": [
                 "Citation 'b': rec-number 1 is marked no_doi, but its traveling library record carries the DOI "
                 "'10.0000/fixture.0101'. Remove no_doi, cite that DOI and make the style print it."
@@ -511,7 +576,7 @@ class BridgeFunctionTests(unittest.TestCase):
         open_libraries = ["EndNote 21 - Lib [2024].enl", "EndNote 21 - My EndNote Library.enl"]
         spec = {
             "functions": ["Resolve-ImportTargetConfirmation"],
-            "variables": [],
+            "variables": ["EndNoteProcessName"],
             "library": library,
             "cases": {
                 # Measured failure of 1.5.2: the window is up, File1 still names the start-up library.
@@ -535,6 +600,11 @@ class BridgeFunctionTests(unittest.TestCase):
                 "handleWithoutWindowList": {"windows": front, "recent": other, "holders": [42], "titles": None},
                 # The front title is not among the library windows found: the list is not trusted.
                 "handleWithEmptyWindowList": {"windows": front, "recent": other, "holders": [42], "titles": []},
+                # 'Project - Lib [2024].enl' is another file, so it neither blocks nor passes for the target.
+                "longerNameEndingInTarget": {"windows": front, "recent": other, "holders": [42],
+                                             "titles": ["EndNote 21 - Lib [2024].enl", "EndNote 21 - Project - Lib [2024].enl"]},
+                "longerNameInFront": {"windows": [{"process_id": 42, "title": "EndNote 21 - Project - Lib [2024].enl"}],
+                                      "recent": library, "holders": [42], "titles": ["EndNote 21 - Project - Lib [2024].enl"]},
             },
         }
         expected = {
@@ -550,6 +620,8 @@ class BridgeFunctionTests(unittest.TestCase):
             "recentLibraryHeldElsewhere": None,
             "handleWithoutWindowList": None,
             "handleWithEmptyWindowList": None,
+            "longerNameEndingInTarget": "open_handle:42",
+            "longerNameInFront": None,
         }
         for host, result in self.run_functions("import-confirmation", IMPORT_CONFIRMATION_BODY, spec).items():
             with self.subTest(host=host):
@@ -561,8 +633,9 @@ class BridgeFunctionTests(unittest.TestCase):
         held.write_text("held", encoding="utf-8")
         free.write_text("free", encoding="utf-8")
         spec = {
-            "functions": ["Test-NativeHelpers", "Get-FileHolderProcessIds"],
-            "variables": ["RestartManagerSource", "RestartManagerTypeName", "RestartManagerUnavailable", "RestartManagerWarning"],
+            "functions": ["Test-NativeHelpers", "Get-FileHolderProcessIds", "Get-EndNoteLibraryWindowTitles"],
+            "variables": ["RestartManagerSource", "RestartManagerTypeName", "RestartManagerUnavailable", "RestartManagerWarning",
+                          "EndNoteProcessName", "LibraryExtension"],
             "held": str(held),
             "free": str(free),
         }
@@ -574,6 +647,7 @@ class BridgeFunctionTests(unittest.TestCase):
                 self.assertEqual(result["free.txt"], [])
                 self.assertIn("EndNote 21 - Probe Library.enl", result["own_windows"])
                 self.assertEqual(result["other_class"], [])
+                self.assertEqual(result["library_windows"], ["EndNote 21 - Probe Library.enl"])
 
 
 class DocumentLibraryTests(unittest.TestCase):

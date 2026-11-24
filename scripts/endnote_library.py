@@ -77,6 +77,7 @@ SELECT_COLUMNS = (
     "pages",
     "electronic_resource_number",
     "url",
+    "notes",
     "abstract",
     "keywords",
     "trash_state",
@@ -103,6 +104,10 @@ YEAR_TOKEN_PATTERN = re.compile(r"\b\d{4}\b")
 DOI_PATTERN = re.compile(r"^10\.\d{4,9}/[!-~]+$", re.IGNORECASE)
 DOI_PREFIX_PATTERN = re.compile(r"^(?:doi:\s*|https?://(?:dx\.)?doi\.org/)", re.IGNORECASE)
 DOI_RESOLVER_URL = "https://doi.org/"
+# A DOI anywhere in a text field: bare, behind doi:, or inside a doi.org or publisher URL.
+DOI_LIKE_PATTERN = re.compile(r"\b10\.\d{4,9}/[^\s<>\"]+")
+# Fields besides the DOI field where imports leave a record's DOI.
+NO_DOI_SCANNED_FIELDS = ("url", "notes")
 DOI_API_BASE_URL = "https://doi.org/api/handles/"
 DOI_API_BASE_ENVIRONMENT_VARIABLE = "ENDNOTE_DOI_API_BASE_URL"
 DOI_VERIFICATION_TIMEOUT_SECONDS = 10
@@ -407,6 +412,7 @@ def _raw_record(
     abstract: Any,
     keywords: Any,
     trash_state: int,
+    notes: Any = "",
 ) -> dict[str, Any]:
     """Build the internal record used for matching, before it is trimmed for output."""
     return {
@@ -421,6 +427,7 @@ def _raw_record(
         "pages": _text(pages),
         "doi": _text(doi),
         "url": _text(url),
+        "notes": _text(notes),
         "abstract": _collapse_whitespace(_text(abstract)),
         "keywords": _collapse_whitespace(_text(keywords)),
         "trash_state": trash_state,
@@ -533,6 +540,7 @@ def _row_to_raw(row: Sequence[Any]) -> dict[str, Any]:
         abstract=values["abstract"],
         keywords=values["keywords"],
         trash_state=int(values["trash_state"] or LIVE_TRASH_STATE),
+        notes=values["notes"],
     )
 
 
@@ -645,6 +653,7 @@ def _xml_record_to_raw(record: ElementTree.Element, position: int) -> dict[str, 
         abstract=_xml_child_text(record, "abstract"),
         keywords="; ".join(keyword for keyword in keywords if keyword),
         trash_state=LIVE_TRASH_STATE,
+        notes=_xml_child_text(record, "notes"),
     )
 
 
@@ -1231,6 +1240,20 @@ def _check_record_has_no_doi(
             actual=raw["doi"],
             **where,
         ))
+        return
+    # A DOI left in another field never reaches the DOI field the style prints.
+    for field in NO_DOI_SCANNED_FIELDS:
+        found = DOI_LIKE_PATTERN.search(raw[field])
+        if found:
+            problems.append(_problem(
+                "library_has_doi",
+                f"Record {rec_number} carries the DOI '{found.group(0)}' in its {field} field. Move it into the "
+                f"record's DOI field in EndNote, remove {NO_DOI_KEY} and cite the target with doi instead.",
+                actual=found.group(0),
+                field=field,
+                **where,
+            ))
+            return
 
 
 def _verify_precheck_dois(
