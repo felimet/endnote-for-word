@@ -136,7 +136,7 @@ ChatGPT cannot connect directly to the bundled local stdio MCP command. It requi
 2. **Choose a style.** List the installed `.ens` output styles and pick an exact name. A style name that does not resolve to an installed file makes EndNote open a modal dialog and hangs the run.
 3. **Find the references.** Search the `.enl` library read-only and collect the record numbers, first-author surnames, years, and bare DOIs.
 4. **Write the manifest.** One entry per citation, each with a unique marker and an explicit display decision. Use `author-year` only when the citation is a grammatical part of the sentence; use `default` for claim support and merged citations.
-5. **Pre-check.** Verify every record exists, is live, matches surname, year, and DOI, stores a bare DOI, and resolves successfully through doi.org. For a `no_doi` target, verify instead that the record's DOI field is empty.
+5. **Pre-check.** Verify every record exists, is live, matches surname, year, and DOI, stores a bare DOI, and resolves successfully through doi.org. For a `no_doi` target, verify instead that the record holds no DOI: its DOI field is empty and its URL and notes carry no DOI-like string.
 6. **Render silently.** The bridge keeps Word hidden, starts EndNote hidden when needed, creates native citation fields, applies `ENAuthorYearFormat` only where requested, and saves atomically.
 7. **Validate.** Re-open the result read-only and run every gate below.
 
@@ -206,7 +206,7 @@ The manifest precheck refuses records whose EndNote DOI field already contains `
 2. No residual temporary citation text remains, matched with `\{[^{}]*#\d+[^{}]*\}` over the document text.
 3. The native citation field count equals the manifest citation count. Counting rule: fields whose code starts with `ADDIN EN.CITE`, minus fields whose code starts with `ADDIN EN.CITE.DATA`, because a large traveling library payload is moved into a nested data field.
 4. When `bibliography.expected` is true, exactly one `ADDIN EN.REFLIST` field exists and its result text is not empty.
-5. Every DOI of a target without `no_doi` is visibly printed as `doi: https://doi.org/<DOI>`, with no doubled resolver prefix and no `doi:` label left without `https://doi.org/<DOI>`. A `no_doi` target is exempt only while its traveling-library record carries no DOI.
+5. Every DOI of a target without `no_doi` is visibly printed as `doi: https://doi.org/<DOI>`, with no doubled resolver prefix and no empty `doi:` label (one followed only by punctuation, the end of the entry or a non-DOI link). A `no_doi` target is exempt only while its traveling-library record carries no DOI.
 6. Every manifest record number appears as `<rec-number>N</rec-number>` in some citation field's traveling library XML, and the matching author surname appears in the same field.
 7. Every `author-year` native field result visibly contains its author surname.
 8. The document text contains no `Error!`, `Reference source not found`, `{Citation}`, or `{Bibliography}` placeholder strings.

@@ -136,7 +136,7 @@ ChatGPT 無法直接連接本專案隨附的本機 stdio MCP 命令；必須建�
 2. **選定樣式。** 列出已安裝的 `.ens` 輸出樣式並取得精確名稱。無法對應到已安裝檔案的樣式名稱會讓 EndNote 跳出對話框並卡住整個流程。
 3. **查找文獻。** 以唯讀方式搜尋 `.enl` 書目庫，取得紀錄編號、第一作者姓氏、年份與裸 DOI。
 4. **撰寫 manifest。** 每一筆引用一個項目，並依語句功能選擇 `display`。作者是句子主詞或具名行動者時用 `author-year`；一般論述證據與合併引用用 `default`。
-5. **預先檢查。** 驗證每筆紀錄存在、未在垃圾桶、姓氏、年份與 DOI 相符、EndNote DOI 欄位只含裸 DOI，且 DOI 可由 doi.org 成功解析；`no_doi` target 則改為確認該紀錄的 DOI 欄位為空。
+5. **預先檢查。** 驗證每筆紀錄存在、未在垃圾桶、姓氏、年份與 DOI 相符、EndNote DOI 欄位只含裸 DOI，且 DOI 可由 doi.org 成功解析；`no_doi` target 則改為確認該紀錄不含 DOI：DOI 欄位為空，URL 與 notes 也沒有 DOI 樣式的字串。
 6. **靜默 Render。** Bridge 隱藏 Word，必要時隱藏啟動 EndNote，建立原生引用欄位，只對指定引用套用 `ENAuthorYearFormat`，最後以不可分割的方式儲存。
 7. **Validate。** 以唯讀方式重新開啟結果，逐項執行下列驗證閘門。
 
@@ -206,7 +206,7 @@ Manifest 預先檢查會拒絕已帶 `doi:` 或 `https://doi.org/` 的 EndNote D
 2. 文件中不得殘留暫時引用文字，以 `\{[^{}]*#\d+[^{}]*\}` 比對全文。
 3. 原生引用欄位數量等於 manifest 的引用筆數。計數規則為：欄位碼以 `ADDIN EN.CITE` 開頭者的數量，減去以 `ADDIN EN.CITE.DATA` 開頭者的數量；traveling library 內容較大時，EndNote 會將其移入巢狀資料欄位。
 4. `bibliography.expected` 為 true 時，必須恰有一個 `ADDIN EN.REFLIST` 欄位，且其結果文字非空白。
-5. 未標 `no_doi` 的 target，其 DOI 都需顯示為 `doi: https://doi.org/<DOI>`；resolver 前綴不可重複，也不可留下後面沒有 `https://doi.org/<DOI>` 的 `doi:` 標籤。`no_doi` target 只有在其 traveling library 紀錄不含 DOI 時才免查。
+5. 未標 `no_doi` 的 target，其 DOI 都需顯示為 `doi: https://doi.org/<DOI>`；resolver 前綴不可重複，也不可留下空的 `doi:` 標籤（後面只接標點、條目結尾或非 DOI 連結）。`no_doi` target 只有在其 traveling library 紀錄不含 DOI 時才免查。
 6. manifest 中每個紀錄編號都要以 `<rec-number>N</rec-number>` 出現在某個引用欄位的 traveling library XML 中，且對應的作者姓氏出現在同一欄位。
 7. 每個 `author-year` 原生欄位的顯示結果都包含作者姓氏。
 8. 文件文字中不得出現 `Error!`、`Reference source not found`、`{Citation}` 或 `{Bibliography}` 等占位字串。
