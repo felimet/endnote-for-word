@@ -21,6 +21,16 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Fixed
 
+- `import_reference_file` no longer times out with `EndNote did not confirm the exact requested
+  import target` while the target library is open in front. It required EndNote's
+  `Recent Libraries\File1` value to name the target, but EndNote keeps that value on the library
+  it opened at start-up, and it required a `<product> - <file>` title although EndNote drops the
+  product prefix after a CWYW job. The target is now confirmed when an EndNote main window shows
+  the file name and the same process holds `<library>.Data\sdb\sdb.eni` open, as Windows
+  Restart Manager reports (`import_target_confirmed_by: open_handle`), or, as before, when
+  `File1` names the exact path (`recent_library`). Neither the registry nor a library file is
+  written, and a timeout now names the windows, the holding processes and the recent library it
+  saw.
 - The `.sha256` files that `scripts/package_plugin.py` writes now end in LF on Windows too, so
   `sha256sum -c` on Linux or macOS accepts them. The CR in the old CRLF ending was read as part
   of the file name, and the check failed although the digest was right.

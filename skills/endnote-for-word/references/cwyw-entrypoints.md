@@ -241,9 +241,11 @@ wrapped in try/catch because 5.1 can throw when stdout is redirected.
 actions do not force-switch a user's existing EndNote session; they record
 `endnote_preexisting: true` and proceed under the safeguards described below. The explicit
 `import-ris` action is different: importing authorizes mutation of the named library, so it
-opens that exact `.enl` path and confirms EndNote's most-recent-library registry value before
-passing the RIS file to Direct Export. A matching window title alone is not sufficient,
-because unrelated libraries can share a filename.
+opens that exact `.enl` path and passes the RIS file to Direct Export only after the EndNote
+main window shows that file name and the same EndNote process holds
+`<library>.Data\sdb\sdb.eni` open, as Windows Restart Manager reports, or EndNote's
+most-recent-library registry value names the exact path. A matching window title alone is
+not sufficient, because unrelated libraries can share a filename.
 
 **CWYW silently auto-launches EndNote when it is closed.** `ENFormatBibliography` was
 measured to succeed with no EndNote process running: CWYW starts EndNote itself, with the

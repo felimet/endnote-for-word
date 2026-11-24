@@ -220,7 +220,7 @@ Manifest 預先檢查會拒絕已帶 `doi:` 或 `https://doi.org/` 的 EndNote D
 | 不支援引用前綴 | 反斜線前綴語法（例如 `{see \Thomsen, 2023 #1}`）會開啟 EndNote 對話框並卡住 automation。manifest 直接拒絕 `prefix`。 |
 | 不支援排除作者或年份 | `{\Thomsen, 2023 #1}` 與 `ENExcludeAuthor` 系列巨集皆由對話框驅動，會卡住流程。樣式允許時請改用 `suffix` 文字。 |
 | 書目庫資料庫安全 | 搜尋只讀取暫存快照；工具絕不直接修改 `sdb.eni`，明確要求的 RIS 匯入交由 EndNote Direct Export 執行。 |
-| 新增文獻已自動化 | `import_reference_file` 開啟精確的目標 library、把 RIS 交給 EndNote、回報數量差異，再要求依 DOI 重新查詢紀錄編號。新目標只能在 EndNote 完全關閉時，由為 0 筆的 library 複製建立。 |
+| 新增文獻已自動化 | `import_reference_file` 開啟精確的目標 library，等到 EndNote 前景顯示該 library 且其 process 持有該 library 資料庫的開啟控制代碼後，才把 RIS 交給 EndNote、回報數量差異，再要求依 DOI 重新查詢紀錄編號。新目標只能在 EndNote 完全關閉時，由為 0 筆的 library 複製建立。 |
 | 參考文獻清單位置採 CWYW 預設 | EndNote 會把清單放在 Cite While You Write 預設的位置，通常是文件結尾。需要調整時請在 EndNote 或 Word 中自行搬移，本工具不負責移動位置。 |
 | 不切換 instant formatting | CWYW 的切換巨集無法讀回目前狀態，盲目呼叫會翻轉未知狀態。需要調整時請在 EndNote 功能區操作。 |
 | 轉為純文字須手動操作 | 對應的 CWYW 巨集 `ENRemoveFieldCodes` 會跳出確認對話框，在 automation 下永不回傳，因此本工具沒有 `remove-field-codes` 動作，也沒有對應的 MCP 工具。請自行在 Word 功能區以 **EndNote > Convert Citations and Bibliography > Convert to Plain Text** 執行；該操作會另存新檔，原始檔的欄位碼保持不變。轉換結果不可逆，EndNote 無法再更新該複本中的引用。 |

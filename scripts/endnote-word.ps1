@@ -163,6 +163,12 @@ $script:EndNoteRegistryRoots = @(
 )
 $script:EndNoteRecentLibrariesRegistryPath = 'HKCU:\Software\ISI ResearchSoft\EndNote\Recent Libraries'
 $script:EndNoteMostRecentLibraryValueName = 'File1'
+# Measured on EndNote 21 (2026-11-24): while a library is open, the EndNote process holds open
+# handles on <library>.enl and on <library>.Data\sdb\sdb.eni and pdb.eni; the files of a closed
+# library are held by no process. Recent Libraries\File1 alone proved unreliable: with another
+# library opened at start-up it kept naming that one while the requested library was open.
+$script:LibraryDatabaseRelativePath = 'sdb\sdb.eni'
+$script:RestartManagerTypeName = 'EndNoteForWordAgent.RestartManager'
 $script:EndNoteAppPathsKeys = @(
     'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\EndNote.exe',
     'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\EndNote.exe'
@@ -275,6 +281,8 @@ $script:EndNoteInstallationCache = $null
 $script:CwywTemplateCache = $null
 $script:InstalledStylesCache = $null
 $script:PowerShellNotice = $null
+$script:RestartManagerUnavailable = $false
+$script:RestartManagerWarning = $null
 
 # ---------------------------------------------------------------------------------------------
 # Generic helpers.
@@ -1364,47 +1372,209 @@ function Resolve-EndNoteImportLibrary {
     return [ordered]@{ library = $created; created = $true; template_path = $template.path }
 }
 
+# Windows Restart Manager (rstrtmgr.dll) reports which processes hold an open handle on a file.
+# Only RmStartSession, RmRegisterResources, RmGetList and RmEndSession are called: the session
+# asks and never shuts down or restarts anything. C# 5 syntax, because Windows PowerShell 5.1
+# compiles Add-Type with the .NET Framework compiler.
+$script:RestartManagerSource = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace EndNoteForWordAgent
+{
+    public static class RestartManager
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct UniqueProcess
+        {
+            public int ProcessId;
+            public System.Runtime.InteropServices.ComTypes.FILETIME StartTime;
+        }
+
+        // RM_PROCESS_INFO; CCH_RM_MAX_APP_NAME is 255 and CCH_RM_MAX_SVC_NAME 63, plus the NUL.
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct ProcessInfo
+        {
+            public UniqueProcess Process;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string AppName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string ServiceShortName;
+            public int ApplicationType;
+            public uint AppStatus;
+            public uint SessionId;
+            [MarshalAs(UnmanagedType.Bool)] public bool Restartable;
+        }
+
+        private const int ErrorMoreData = 234;
+        // CCH_RM_SESSION_KEY plus the NUL.
+        private const int SessionKeyCharacters = 33;
+        // A process that opens the file between two RmGetList calls asks for a larger buffer.
+        private const int ListAttempts = 3;
+
+        [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+        private static extern int RmStartSession(out uint session, int flags, StringBuilder key);
+
+        [DllImport("rstrtmgr.dll")]
+        private static extern int RmEndSession(uint session);
+
+        [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+        private static extern int RmRegisterResources(uint session, uint fileCount, string[] files,
+            uint processCount, UniqueProcess[] processes, uint serviceCount, string[] services);
+
+        [DllImport("rstrtmgr.dll")]
+        private static extern int RmGetList(uint session, out uint needed, ref uint count,
+            [In, Out] ProcessInfo[] processes, ref uint rebootReasons);
+
+        public static int[] GetHolderProcessIds(string[] paths)
+        {
+            uint session;
+            int status = RmStartSession(out session, 0, new StringBuilder(SessionKeyCharacters));
+            if (status != 0) { throw new Win32Exception(status); }
+            try
+            {
+                status = RmRegisterResources(session, (uint)paths.Length, paths, 0, null, 0, null);
+                if (status != 0) { throw new Win32Exception(status); }
+                ProcessInfo[] processes = null;
+                uint needed = 0;
+                uint count = 0;
+                uint reasons = 0;
+                status = RmGetList(session, out needed, ref count, processes, ref reasons);
+                for (int attempt = 0; attempt < ListAttempts && status == ErrorMoreData; attempt++)
+                {
+                    processes = new ProcessInfo[needed];
+                    count = needed;
+                    status = RmGetList(session, out needed, ref count, processes, ref reasons);
+                }
+                if (status != 0) { throw new Win32Exception(status); }
+                int[] ids = new int[count];
+                for (int index = 0; index < count; index++) { ids[index] = processes[index].Process.ProcessId; }
+                return ids;
+            }
+            finally
+            {
+                RmEndSession(session);
+            }
+        }
+    }
+}
+'@
+
+function Get-FileHolderProcessIds {
+    # Returns the PIDs holding Path open, or $null when Restart Manager cannot answer; the caller
+    # then has one signal fewer and never treats the gap as a confirmation.
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not ($script:RestartManagerTypeName -as [type])) {
+        if ($script:RestartManagerUnavailable) { return $null }
+        try { Add-Type -TypeDefinition $script:RestartManagerSource -ErrorAction Stop }
+        catch {
+            $script:RestartManagerUnavailable = $true
+            Write-Log -Level WARN -Message "Could not load the Restart Manager interop, so only EndNote's recent-library value can confirm an import target: $($_.Exception.Message)"
+            return $null
+        }
+    }
+    try { return , ([EndNoteForWordAgent.RestartManager]::GetHolderProcessIds([string[]]@($Path))) }
+    catch {
+        $message = $_.Exception.Message
+        # Logged once per distinct message: the import poll asks four times a second.
+        if ($message -ne $script:RestartManagerWarning) {
+            $script:RestartManagerWarning = $message
+            Write-Log -Level WARN -Message "Restart Manager could not list the processes holding ${Path}: $message"
+        }
+        return $null
+    }
+}
+
+function Get-EndNoteMainWindows {
+    $windows = New-Object System.Collections.Generic.List[object]
+    foreach ($process in @(Get-Process -Name $script:EndNoteProcessName -ErrorAction SilentlyContinue)) {
+        if ($process.MainWindowHandle -ne 0) {
+            $windows.Add([pscustomobject]@{ process_id = [int]$process.Id; title = [string]$process.MainWindowTitle })
+        }
+    }
+    return , $windows.ToArray()
+}
+
+function Resolve-ImportTargetConfirmation {
+    # Decides from plain values whether EndNote shows exactly LibraryFile in front, so the offline
+    # tests can drive it. A main-window title names only the file, never its folder, so a library
+    # with the same file name elsewhere would also match; the title is therefore accepted only
+    # together with a signal that names the full path, checked for the same EndNote process:
+    #   open_handle    - that process holds <library>.Data\sdb\sdb.eni open (HolderProcessIds).
+    #   recent_library - EndNote's most recent library, Recent Libraries\File1, is LibraryFile.
+    # Direct Export imports into the library in front, which is why the title must match too.
+    param(
+        [Parameter(Mandatory)][string]$LibraryFile,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Windows,
+        [AllowNull()][AllowEmptyString()][string]$RecentLibrary,
+        [AllowNull()][int[]]$HolderProcessIds
+    )
+    $fileName = [IO.Path]::GetFileName($LibraryFile)
+    foreach ($window in $Windows) {
+        $title = [string]$window.title
+        # EndNote titles the window '<product> - <file>', and just '<file>' after a CWYW job.
+        if (-not ($title -ieq $fileName -or $title.EndsWith(' - ' + $fileName, [StringComparison]::OrdinalIgnoreCase))) { continue }
+        $signal = $null
+        if ($null -ne $HolderProcessIds -and $HolderProcessIds -contains [int]$window.process_id) {
+            $signal = 'open_handle'
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($RecentLibrary) -and
+            [string]::Equals($RecentLibrary, $LibraryFile, [StringComparison]::OrdinalIgnoreCase)) {
+            $signal = 'recent_library'
+        }
+        if ($null -ne $signal) {
+            return [ordered]@{
+                process_id             = [int]$window.process_id
+                title                  = $title
+                confirmed_library_path = $LibraryFile
+                confirmed_by           = $signal
+            }
+        }
+    }
+    return $null
+}
+
+function Get-ImportTargetConfirmation {
+    param(
+        [Parameter(Mandatory)][string]$LibraryFile,
+        [Parameter(Mandatory)][string]$DatabaseFile
+    )
+    return Resolve-ImportTargetConfirmation -LibraryFile $LibraryFile -Windows (Get-EndNoteMainWindows) `
+        -RecentLibrary (Get-EndNoteMostRecentLibraryPath) -HolderProcessIds (Get-FileHolderProcessIds -Path $DatabaseFile)
+}
+
 function Open-EndNoteLibraryForImport {
     param(
         [Parameter(Mandatory)][string]$LibraryFile,
         [Parameter(Mandatory)]$Installation
     )
-    $fileName = [IO.Path]::GetFileName($LibraryFile)
     $fullLibrary = [IO.Path]::GetFullPath($LibraryFile)
-    $preexisting = $false
-    $recentBefore = Get-EndNoteMostRecentLibraryPath
-    if (-not [string]::IsNullOrWhiteSpace($recentBefore) -and
-        [string]::Equals($recentBefore, $fullLibrary, [StringComparison]::OrdinalIgnoreCase)) {
-        foreach ($process in @(Get-Process -Name $script:EndNoteProcessName -ErrorAction SilentlyContinue)) {
-            if ($process.MainWindowHandle -ne 0 -and $process.MainWindowTitle -like "* - $fileName") {
-                $preexisting = $true
-                break
-            }
-        }
-    }
+    $database = [IO.Path]::Combine((Get-LibraryDataDirectory -LibraryFile $fullLibrary), $script:LibraryDatabaseRelativePath)
+    $preexisting = $null -ne (Get-ImportTargetConfirmation -LibraryFile $fullLibrary -DatabaseFile $database)
 
     # Unlike render, import is an explicit request to mutate this exact library. Opening the
-    # supplied path is therefore required even when another library is already open.
+    # supplied path is therefore required even when another library is already open; it also
+    # brings an already open library to the front, where Direct Export imports.
     Write-Log -Level INFO -Message "Opening the import target library: $LibraryFile"
     Start-Process -FilePath $Installation.executable -ArgumentList ('"' + $LibraryFile + '"') -WindowStyle Hidden | Out-Null
     $deadline = [DateTime]::UtcNow.AddMilliseconds($script:EndNoteReadyTimeoutMilliseconds)
     while ([DateTime]::UtcNow -lt $deadline) {
-        $recentLibrary = Get-EndNoteMostRecentLibraryPath
-        foreach ($process in @(Get-Process -Name $script:EndNoteProcessName -ErrorAction SilentlyContinue)) {
-            if ($process.MainWindowHandle -ne 0 -and $process.MainWindowTitle -like "* - $fileName" -and
-                -not [string]::IsNullOrWhiteSpace($recentLibrary) -and
-                [string]::Equals($recentLibrary, $fullLibrary, [StringComparison]::OrdinalIgnoreCase)) {
-                return [ordered]@{
-                    preexisting = $preexisting
-                    process_id = $process.Id
-                    title = $process.MainWindowTitle
-                    confirmed_library_path = $recentLibrary
-                }
-            }
+        $confirmation = Get-ImportTargetConfirmation -LibraryFile $fullLibrary -DatabaseFile $database
+        if ($null -ne $confirmation) {
+            Write-Log -Level INFO -Message "EndNote PID $($confirmation.process_id) shows '$($confirmation.title)', confirmed by $($confirmation.confirmed_by)."
+            $confirmation['preexisting'] = $preexisting
+            return $confirmation
         }
         Start-Sleep -Milliseconds $script:AutomationPollMilliseconds
     }
-    throw "EndNote did not confirm the exact requested import target '$fullLibrary' within $($script:EndNoteReadyTimeoutMilliseconds) ms."
+    $seen = New-Object System.Collections.Generic.List[string]
+    foreach ($window in (Get-EndNoteMainWindows)) { $seen.Add("'" + $window.title + "'") }
+    $titles = 'none'
+    if ($seen.Count -gt 0) { $titles = $seen -join ', ' }
+    $holders = Get-FileHolderProcessIds -Path $database
+    $holderText = 'unknown'
+    if ($null -ne $holders) { $holderText = '[' + ($holders -join ', ') + ']' }
+    throw "EndNote did not confirm the exact requested import target '$fullLibrary' within $($script:EndNoteReadyTimeoutMilliseconds) ms. EndNote main windows: $titles; processes holding ${database}: $holderText; most recent library: '$(Get-EndNoteMostRecentLibraryPath)'. Answer any EndNote dialog, bring the library to the front, and retry."
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -2734,6 +2904,7 @@ function Invoke-ImportRis {
             endnote_preexisting_target   = [bool]$opened.preexisting
             endnote_window_title         = $opened.title
             confirmed_library_path       = $opened.confirmed_library_path
+            import_target_confirmed_by   = $opened.confirmed_by
             import_route                 = 'EndNote Direct Export'
             note                         = $note
         })

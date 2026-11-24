@@ -170,6 +170,25 @@ foreach ($bibliography in $spec.bibliographies.PSObject.Properties) {
 $result | ConvertTo-Json -Compress -Depth 5
 """
 
+IMPORT_CONFIRMATION_BODY = r"""
+foreach ($case in $spec.cases.PSObject.Properties) {
+    $holders = $null
+    if ($null -ne $case.Value.holders) { $holders = [int[]]@($case.Value.holders) }
+    $confirmation = Resolve-ImportTargetConfirmation -LibraryFile $spec.library -Windows @($case.Value.windows) `
+        -RecentLibrary $case.Value.recent -HolderProcessIds $holders
+    if ($null -eq $confirmation) { $result[$case.Name] = $null }
+    else { $result[$case.Name] = '{0}:{1}' -f $confirmation.confirmed_by, $confirmation.process_id }
+}
+$result | ConvertTo-Json -Compress
+"""
+
+FILE_HOLDER_BODY = r"""
+foreach ($path in @($spec.held, $spec.free)) {
+    $ids = Get-FileHolderProcessIds -Path $path
+    $result[[IO.Path]::GetFileName($path)] = $ids
+}
+$result | ConvertTo-Json -Compress
+"""
 
 
 def available_hosts() -> list[str]:
@@ -435,6 +454,55 @@ class BridgeFunctionTests(unittest.TestCase):
         for host, result in self.run_functions("manifest-target", MANIFEST_TARGET_BODY, spec).items():
             with self.subTest(host=host):
                 self.assertEqual(result, expected)
+
+    def test_import_target_needs_its_title_and_a_full_path_signal_from_the_same_process(self) -> None:
+        library = r"E:\Projects\Grading\Lib [2024].enl"
+        front = [{"process_id": 42, "title": "EndNote 21 - Lib [2024].enl"}]
+        spec = {
+            "functions": ["Resolve-ImportTargetConfirmation"],
+            "variables": [],
+            "library": library,
+            "cases": {
+                # Measured failure of 1.5.2: the window is up, File1 still names the start-up library.
+                "handleWhileRecentNamesAnother": {"windows": front, "recent": r"E:\Other\My EndNote Library.enl", "holders": [42]},
+                "titleWithoutProductPrefix": {"windows": [{"process_id": 42, "title": "lib [2024].ENL"}], "recent": None, "holders": [42]},
+                "recentLibraryWithoutRestartManager": {"windows": front, "recent": library.upper(), "holders": None},
+                "heldByAnotherProcessOnly": {"windows": front, "recent": r"E:\Other\My EndNote Library.enl", "holders": [7]},
+                "heldButAnotherLibraryInFront": {"windows": [{"process_id": 42, "title": "EndNote 21 - Other.enl"}], "recent": library, "holders": [42]},
+                "sameSuffixOtherName": {"windows": [{"process_id": 42, "title": "EndNote 21 - MyLib [2024].enl"}], "recent": library, "holders": [42]},
+                "noEndNoteWindow": {"windows": [], "recent": library, "holders": [42]},
+            },
+        }
+        expected = {
+            "handleWhileRecentNamesAnother": "open_handle:42",
+            "titleWithoutProductPrefix": "open_handle:42",
+            "recentLibraryWithoutRestartManager": "recent_library:42",
+            "heldByAnotherProcessOnly": None,
+            "heldButAnotherLibraryInFront": None,
+            "sameSuffixOtherName": None,
+            "noEndNoteWindow": None,
+        }
+        for host, result in self.run_functions("import-confirmation", IMPORT_CONFIRMATION_BODY, spec).items():
+            with self.subTest(host=host):
+                self.assertEqual(result, expected)
+
+    def test_restart_manager_names_the_process_holding_a_file(self) -> None:
+        held = self.workspace / "held.txt"
+        free = self.workspace / "free.txt"
+        held.write_text("held", encoding="utf-8")
+        free.write_text("free", encoding="utf-8")
+        spec = {
+            "functions": ["Get-FileHolderProcessIds"],
+            "variables": ["RestartManagerSource", "RestartManagerTypeName", "RestartManagerUnavailable", "RestartManagerWarning"],
+            "held": str(held),
+            "free": str(free),
+        }
+        with held.open("rb"):
+            results = self.run_functions("file-holders", FILE_HOLDER_BODY, spec)
+        for host, result in results.items():
+            with self.subTest(host=host):
+                self.assertIn(os.getpid(), result["held.txt"])
+                self.assertEqual(result["free.txt"], [])
 
 
 class DocumentLibraryTests(unittest.TestCase):

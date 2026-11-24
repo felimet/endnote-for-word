@@ -563,7 +563,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "import_reference_file",
         "description": (
             "Import a RIS file into the exact EndNote library supplied by library_path through "
-            "EndNote's native Direct Export route, then report the before/after live-reference "
+            "EndNote's native Direct Export route, once EndNote is proven to hold that exact library "
+            "open in front, then report the before/after live-reference "
             "counts. When the user names no library, omit library_path and pass document_path: "
             "the target is <document stem>.enl beside the DOCX, and it is refused when it does "
             "not exist yet but the DOCX already carries EndNote fields. A missing target is "
