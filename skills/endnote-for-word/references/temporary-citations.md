@@ -100,7 +100,8 @@ opened at all:
 2. The record must exist, must have `trash_state = 0`, must have a first author surname
    matching the manifest `author` case insensitively and accent tolerantly, and must have
    a matching `year` and bare DOI.
-3. The DOI must resolve successfully through the official doi.org Proxy API.
+3. The DOI must resolve successfully through the official doi.org Proxy API. A target marked
+   `"no_doi": true` skips both DOI checks; its record must instead have an empty DOI field.
 4. The precheck reports every mismatch, not just the first, so a manifest can be fixed in
    one pass.
 

@@ -251,13 +251,15 @@ Author. "Title." Publisher. doi: https://doi.org/DOI. URL (accessed Access Date)
 ```
 
 In EndNote's editor, use the `Link Adjacent Text` operator around optional DOI phrases so
-the literal disappears when the field is empty. This project nevertheless blocks any cited
-record with an empty DOI before Word opens. The style editor must use `Save As`; installed
+the literal disappears when the field is empty. A cited record with an empty DOI reaches the
+style only through a target marked `"no_doi": true`; without Link Adjacent Text the style then
+prints a bare `doi: https://doi.org/`, which validation rejects. The style editor must use `Save As`; installed
 styles are not overwritten. Save the result in the personal Styles folder and confirm its
 base name through `list_endnote_styles`.
 
-The validator reads the visible `ADDIN EN.REFLIST` result. It fails when any manifest DOI is
-not present in the exact form `doi: https://doi.org/<DOI>` or when it sees a doubled resolver
+The validator reads the visible `ADDIN EN.REFLIST` result. It fails when the DOI of any
+manifest target without `no_doi` is not present in the exact form `doi: https://doi.org/<DOI>`,
+when `doi: https://doi.org/` is followed by no DOI, or when it sees a doubled resolver
 such as `https://doi.org/https://doi.org/<DOI>`. This makes a bad template or a prefixed DOI
 field a hard failure instead of a cosmetic defect.
 

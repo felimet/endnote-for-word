@@ -43,6 +43,9 @@
 | Manifest rejected for a `prefix` key | Prefix and excluded author syntax are not supported in v1 | Both open modal dialogs. See `temporary-citations.md`. |
 | Precheck reports `library_doi_not_canonical` | The EndNote DOI field contains `doi:` or a resolver URL | Keep only the bare DOI in EndNote, then rerun precheck. |
 | Precheck reports `doi_not_resolvable` | doi.org does not return a successful handle | Correct the DOI from an authoritative source; do not render while the gate fails. |
+| Precheck reports `missing_doi` and `library_missing_doi` for a web page, patent or extension article | The record has no DOI and its target does not opt out | Confirm the item really has no DOI, then set `"no_doi": true` on that target and remove `doi`. |
+| Precheck reports `library_has_doi` | A target marked `no_doi` points at a record whose DOI field is not empty | Remove `no_doi` and put the record's bare DOI in the target, or correct the record's DOI field in EndNote. |
+| Bibliography validation reports `doi: https://doi.org/` without a DOI after it | The output style prints its DOI phrase for a record with an empty DOI field, which a `no_doi` target cites | Wrap the DOI phrase of that reference type's Bibliography Template in Link Adjacent Text, save the style with Save As, select it and rerender. |
 | Bibliography validation reports a missing DOI link | The active style's Bibliography Template does not print `doi: https://doi.org/DOI` for that reference type | Correct the style with Save As, select the corrected style, rerender, and validate. |
 | Bibliography validation reports a duplicated resolver | A prefixed EndNote DOI was combined with the style's resolver literal | Replace the record DOI with its bare value and rerender. |
 | MCP client reports a protocol parse error | Something wrote to stdout that was not JSON-RPC | Protocol output on stdout must be JSON only; all diagnostics belong on stderr. |

@@ -202,6 +202,9 @@ $script:RecordNumberElementFormat = '<rec-number>{0}</rec-number>'
 $script:DoiPattern = '^10\.\d{4,9}/[!-~]+$'
 $script:DoiResolverPrefix = 'https://doi.org/'
 $script:DuplicateDoiResolverPattern = '(?i)https://doi\.org/(?:https?://(?:dx\.)?doi\.org/|doi:\s*)'
+# The style's DOI literal with no DOI after it: a template without Link Adjacent Text printed it
+# for a record whose DOI field is empty, which only a no_doi target can reach.
+$script:DanglingDoiResolverPattern = '(?i)\bdoi: https://doi\.org/(?!10\.)'
 
 # Manifest schema v1.
 $script:ManifestSchemaVersion = 1
@@ -212,7 +215,10 @@ $script:CitedPagesPattern = '^[0-9]+(\s*-\s*[0-9]+)?$'
 $script:ForbiddenCitationTextPattern = '[{}#@;\\]'
 $script:AllowedManifestKeys = @('schema_version', 'library', 'style', 'citations', 'bibliography')
 $script:AllowedCitationKeys = @('id', 'marker', 'targets', 'display', 'pages', 'suffix')
-$script:AllowedTargetKeys = @('rec_number', 'author', 'year', 'doi')
+$script:AllowedTargetKeys = @('rec_number', 'author', 'year', 'doi', 'no_doi')
+# A target opts out of the DOI gates only with an explicit "no_doi": true, for a record that has
+# no DOI (web page, patent, extension article). The precheck still matches the record itself.
+$script:NoDoiTargetKey = 'no_doi'
 $script:AllowedLibraryKeys = @('path')
 $script:AllowedBibliographyKeys = @('expected')
 $script:RejectedCitationKeys = @('prefix')
@@ -1586,6 +1592,12 @@ function Get-CitationDisplay {
     return $display.Trim().ToLowerInvariant()
 }
 
+function Test-NoDoiTarget {
+    param([Parameter(Mandatory)]$Target)
+    $value = Get-OptionalProperty -Object $Target -Name $script:NoDoiTargetKey
+    return ($value -is [bool] -and $value)
+}
+
 function Assert-ManifestTarget {
     param(
         [Parameter(Mandatory)]$Target,
@@ -1598,8 +1610,14 @@ function Assert-ManifestTarget {
     if ([string]::IsNullOrWhiteSpace($author)) { throw "Citation '$CitationId' requires a non-empty author for every target." }
     Assert-CitationText -Value $author -Label "Citation '$CitationId' author"
     $null = ConvertTo-ManifestInteger -Value (Get-OptionalProperty -Object $Target -Name 'year') -Label "Citation '$CitationId' year"
+    $noDoi = $Target.PSObject.Properties[$script:NoDoiTargetKey]
+    if ($null -ne $noDoi -and $noDoi.Value -isnot [bool]) { throw "Citation '$CitationId' no_doi must be true or false." }
+    if (Test-NoDoiTarget -Target $Target) {
+        if ($null -ne $Target.PSObject.Properties['doi']) { throw "Citation '$CitationId' sets no_doi and also carries doi; keep only the DOI." }
+        return
+    }
     $doi = [string](Get-OptionalProperty -Object $Target -Name 'doi')
-    if ([string]::IsNullOrWhiteSpace($doi)) { throw "Citation '$CitationId' requires a DOI for every target." }
+    if ([string]::IsNullOrWhiteSpace($doi)) { throw "Citation '$CitationId' requires a DOI for every target, or ""no_doi"": true for a record that has none." }
     if ($doi -notmatch $script:DoiPattern) {
         throw "Citation '$CitationId' DOI must be the bare DOI without 'doi:' or a resolver URL: $doi"
     }
@@ -2021,9 +2039,14 @@ function Add-BibliographyValidationProblems {
     if ($bibliographyText -match $script:DuplicateDoiResolverPattern) {
         $Errors.Add('The bibliography contains a duplicated DOI resolver prefix.')
     }
+    elseif ($bibliographyText -match $script:DanglingDoiResolverPattern) {
+        $Errors.Add("The bibliography prints 'doi: https://doi.org/' without a DOI after it. Wrap the output style's DOI phrase in Link Adjacent Text so it disappears for a record without a DOI.")
+    }
     $checkedDois = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
     foreach ($citation in @(Get-OptionalProperty -Object $Manifest -Name 'citations')) {
         foreach ($target in @(Get-OptionalProperty -Object $citation -Name 'targets')) {
+            # The precheck proved this record has no DOI, so the style prints none.
+            if (Test-NoDoiTarget -Target $target) { continue }
             $doi = [string](Get-OptionalProperty -Object $target -Name 'doi')
             if (-not $checkedDois.Add($doi)) { continue }
             $visibleDoi = 'doi: ' + $script:DoiResolverPrefix + $doi
@@ -2456,6 +2479,7 @@ function Invoke-Render {
             author_year_citations  = $authorYearCount
             targets                = $context.target_count
             doi_verified           = @($context.precheck.resolved | Where-Object { $_.doi_verified }).Count
+            no_doi_targets         = @($context.precheck.resolved | Where-Object { $_.no_doi }).Count
             native_citation_fields = $fields.citation_codes.Count
             citation_data_fields   = $fields.citation_data_codes.Count
             bibliography_present   = $fields.bibliography_codes.Count -gt 0

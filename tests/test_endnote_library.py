@@ -164,6 +164,17 @@ FIXTURE_RECORDS = [
     },
 ]
 
+# A web page (EndNote reference type 16) and a patent (15) without a DOI, as local extension
+# articles, web pages and patents carry none, beside a journal article that has one.
+NO_DOI_RECORDS = [
+    {"id": 1, "trash_state": 0, "reference_type": 16, "author": "Chen, Mei", "year": "2024",
+     "title": "Synthetic web page without a DOI", "url": "https://example.org/fixture-page"},
+    {"id": 2, "trash_state": 0, "reference_type": 15, "author": "Lin, Wei", "year": "2021",
+     "title": "Synthetic patent without a DOI"},
+    {"id": 3, "trash_state": 0, "reference_type": 17, "author": "Wang, Hao", "year": "2022",
+     "title": "Synthetic journal article with a DOI", "electronic_resource_number": "10.0000/fixture.0103"},
+]
+
 XML_EXPORT = """<?xml version="1.0" encoding="UTF-8"?>
 <xml><records>
   <record>
@@ -253,6 +264,7 @@ class EndNoteLibraryCliTests(unittest.TestCase):
         cls._directory = tempfile.TemporaryDirectory(prefix="endnote-library-")
         cls.workspace = Path(cls._directory.name)
         cls.library = build_synthetic_library(cls.workspace)
+        cls.no_doi_library = build_synthetic_library(cls.workspace / "no-doi", "NoDoiLibrary", NO_DOI_RECORDS)
         cls._doi_server = ThreadingHTTPServer(("127.0.0.1", 0), DoiResolverHandler)
         cls._doi_thread = threading.Thread(target=cls._doi_server.serve_forever, daemon=True)
         cls._doi_thread.start()
@@ -621,6 +633,72 @@ class EndNoteLibraryCliTests(unittest.TestCase):
             DoiResolverHandler.unresolvable.clear()
         self.assertFalse(result["ok"], result)
         self.assertIn("doi_not_resolvable", {problem["problem"] for problem in result["problems"]})
+
+    # -- precheck: targets that opt out of the DOI ---------------------------------
+
+    def precheck_no_doi(self, name: str, targets: list[dict]) -> dict:
+        manifest = self.write_manifest(
+            name, [{"id": "c" + str(index), "marker": "{{CITE:c" + str(index) + "}}", "targets": [target]}
+                   for index, target in enumerate(targets)],
+        )
+        return self.run_cli("precheck", "--library", str(self.no_doi_library), "--manifest", str(manifest))
+
+    def test_no_doi_target_is_accepted_when_its_record_has_no_doi(self) -> None:
+        result = self.precheck_no_doi("no-doi-accepted.json", [
+            {"rec_number": 1, "author": "Chen", "year": 2024, "no_doi": True},
+            {"rec_number": 2, "author": "Lin", "year": 2021, "no_doi": True},
+            {"rec_number": 3, "author": "Wang", "year": 2022, "doi": "10.0000/fixture.0103"},
+        ])
+        self.assertTrue(result["ok"], result)
+        by_record = {entry["rec_number"]: entry for entry in result["resolved"]}
+        self.assertEqual(
+            [(by_record[1]["no_doi"], by_record[1]["doi"], by_record[1]["doi_verified"]),
+             (by_record[2]["no_doi"], by_record[2]["doi"], by_record[2]["doi_verified"]),
+             (by_record[3]["no_doi"], by_record[3]["doi"], by_record[3]["doi_verified"])],
+            [(True, "", False), (True, "", False), (False, "10.0000/fixture.0103", True)],
+        )
+
+    def test_no_doi_target_is_rejected_when_its_record_has_a_doi(self) -> None:
+        result = self.precheck_no_doi("no-doi-record-has-doi.json", [
+            {"rec_number": 3, "author": "Wang", "year": 2022, "no_doi": True},
+        ])
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(
+            [(problem["problem"], problem.get("actual")) for problem in result["problems"]],
+            [("library_has_doi", "10.0000/fixture.0103")],
+        )
+
+    def test_no_doi_target_still_checks_the_record_identity(self) -> None:
+        result = self.precheck_no_doi("no-doi-identity.json", [
+            {"rec_number": 1, "author": "Lin", "year": 2020, "no_doi": True},
+            {"rec_number": 9999, "author": "Nobody", "year": 2020, "no_doi": True},
+        ])
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(
+            sorted(problem["problem"] for problem in result["problems"]),
+            ["author_mismatch", "record_not_found", "year_mismatch"],
+        )
+
+    def test_target_without_doi_or_opt_in_is_still_rejected(self) -> None:
+        result = self.precheck_no_doi("no-doi-missing-opt-in.json", [
+            {"rec_number": 1, "author": "Chen", "year": 2024},
+            {"rec_number": 2, "author": "Lin", "year": 2021, "no_doi": False},
+        ])
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(
+            sorted(problem["problem"] for problem in result["problems"]),
+            ["library_missing_doi", "library_missing_doi", "missing_doi", "missing_doi"],
+        )
+
+    def test_no_doi_must_be_a_boolean_and_excludes_a_doi(self) -> None:
+        result = self.precheck_no_doi("no-doi-malformed.json", [
+            {"rec_number": 1, "author": "Chen", "year": 2024, "no_doi": "yes"},
+            {"rec_number": 2, "author": "Lin", "year": 2021, "no_doi": True, "doi": "10.0000/fixture.0103"},
+        ])
+        self.assertFalse(result["ok"], result)
+        problems = sorted((problem["citation_id"], problem["problem"]) for problem in result["problems"])
+        self.assertIn(("c0", "invalid_manifest"), problems)
+        self.assertIn(("c1", "invalid_manifest"), problems)
 
     # -- failure surfaces --------------------------------------------------------
 

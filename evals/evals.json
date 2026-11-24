@@ -133,6 +133,22 @@
         "Accepts style-owned punctuation such as 'Hernandez, et al. [1]' without pausing, questioning it, switching to default display, or restoring a plain-text author.",
         "Lets ENAuthorYearFormat generate the visible author and number and validates the native EN.CITE field."
       ]
+    },
+    {
+      "id": 9,
+      "tags": ["non-doi-target", "doi-required", "mixed-manifest"],
+      "prompt": "我的計畫書要同時引用 single-manifest.json 裡那篇期刊論文，以及我 EndNote library 裡一篇農業部推廣刊物和一筆專利，後兩筆在 EndNote 裡都沒有 DOI。請用同一份 manifest 一次 render，再 validate。",
+      "expected_output": "One manifest in which the journal target keeps its bare DOI and each record without a DOI carries \"no_doi\": true and no doi key, a passing precheck, a single render pass for all citations, and a validation report whose only skipped check is the visible DOI link of the no_doi targets.",
+      "files": [
+        "tests/fixtures/single-manifest.json"
+      ],
+      "expectations": [
+        "Confirms with search_endnote_library or get_endnote_reference that the extension article and the patent records really have an empty DOI field before marking them no_doi.",
+        "Sets \"no_doi\": true per target only on the records without a DOI, never on the journal article, and never removes or invents a DOI to pass the precheck.",
+        "Runs precheck_endnote_manifest and fixes a library_has_doi problem by putting the record's DOI into the target instead of keeping no_doi.",
+        "Renders every citation in one render call instead of adding temporary citations by hand for the records without a DOI.",
+        "Runs manifest-aware validation and reports the native citation count equal to the manifest citation count, with the journal DOI visible as doi: https://doi.org/<DOI>."
+      ]
     }
   ]
 }

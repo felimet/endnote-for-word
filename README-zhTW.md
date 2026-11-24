@@ -10,7 +10,7 @@ EndNote for Word 是 Microsoft Word 的 AI 引用管理工具包，提供 Claude
 - 將 DOCX 中的 `{{CITE:id}}` 標記換成真正的 CWYW 引用：每一筆引用都是帶有 EndNote traveling library 的 `ADDIN EN.CITE` 欄位，參考文獻清單則是 `ADDIN EN.REFLIST` 欄位。
 - 不手打引用文字、不在 OOXML 中偽造欄位碼，也不以純文字清單假冒參考文獻清單。
 - 以唯讀快照讀取 `.enl` 書目庫，讓 Agent 在開啟 Word 前搜尋文獻並確認紀錄編號；RIS 匯入是唯一會寫入 library 的動作，且寫入完全由 EndNote 執行。
-- 預設採 IEEE，每筆被引用文獻都必須具備 DOI，引用前會透過 doi.org 驗證，並拒絕重複的 resolver 前綴。
+- 預設採 IEEE，每筆被引用文獻都必須具備 DOI，引用前會透過 doi.org 驗證，並拒絕重複的 resolver 前綴。網頁、專利、推廣刊物等本身沒有 DOI 的紀錄，只能在該 target 明確標註 `"no_doi": true` 才可引用，且預先檢查會確認該紀錄確實沒有 DOI。
 - 同時支援 IEEE Default Format 的 `[x]`，以及 EndNote Display as Author (Year) 所產生的 `Author et al. [x]` 敘述式引用。
 - 保留 output style 決定的敘述式標點；`Hernandez, et al. [1]` 這類形式是正常的 EndNote 輸出，不會只為移除逗號而退回純文字作者或 Default Format。
 - 在渲染前先對 manifest 與已安裝輸出樣式做預先檢查。不存在的紀錄編號或樣式名稱會讓 EndNote 跳出對話框，automation 會卡住直到 process 被強制結束。
@@ -136,7 +136,7 @@ ChatGPT 無法直接連接本專案隨附的本機 stdio MCP 命令；必須建�
 2. **選定樣式。** 列出已安裝的 `.ens` 輸出樣式並取得精確名稱。無法對應到已安裝檔案的樣式名稱會讓 EndNote 跳出對話框並卡住整個流程。
 3. **查找文獻。** 以唯讀方式搜尋 `.enl` 書目庫，取得紀錄編號、第一作者姓氏、年份與裸 DOI。
 4. **撰寫 manifest。** 每一筆引用一個項目，並依語句功能選擇 `display`。作者是句子主詞或具名行動者時用 `author-year`；一般論述證據與合併引用用 `default`。
-5. **預先檢查。** 驗證每筆紀錄存在、未在垃圾桶、姓氏、年份與 DOI 相符、EndNote DOI 欄位只含裸 DOI，且 DOI 可由 doi.org 成功解析。
+5. **預先檢查。** 驗證每筆紀錄存在、未在垃圾桶、姓氏、年份與 DOI 相符、EndNote DOI 欄位只含裸 DOI，且 DOI 可由 doi.org 成功解析；`no_doi` target 則改為確認該紀錄的 DOI 欄位為空。
 6. **靜默 Render。** Bridge 隱藏 Word，必要時隱藏啟動 EndNote，建立原生引用欄位，只對指定引用套用 `ENAuthorYearFormat`，最後以不可分割的方式儲存。
 7. **Validate。** 以唯讀方式重新開啟結果，逐項執行下列驗證閘門。
 
@@ -175,7 +175,7 @@ ChatGPT 無法直接連接本專案隨附的本機 stdio MCP 命令；必須建�
 | `citations` | 非空陣列。未知的最上層鍵與引用層鍵一律拒絕。 |
 | `id` | 符合 `^[A-Za-z][A-Za-z0-9_-]*$`，且全域唯一。 |
 | `marker` | 全域唯一，且必須在文件中恰好出現一次。 |
-| `targets` | 非空。每個 target 需有大於零的整數 `rec_number`、非空的 `author` 姓氏、整數 `year`，以及不含 `doi:` 或 resolver URL 的裸 `doi`。 |
+| `targets` | 非空。每個 target 需有大於零的整數 `rec_number`、非空的 `author` 姓氏、整數 `year`，以及不含 `doi:` 或 resolver URL 的裸 `doi`；沒有 DOI 的紀錄改用 `"no_doi": true`，兩者不可並存。 |
 | `display` | IEEE 下，`default` 產生 `[x]`；`author-year` 產生 `Author et al. [x]`。`author-year` 只能有一個 target。 |
 | `pages` | 選填。符合 `^[0-9]+(\s*-\s*[0-9]+)?$`。僅在 `targets` 恰有一個項目時允許。 |
 | `suffix` | 選填自由文字，例如 `", p. 99"`。僅在 `targets` 恰有一個項目時允許。 |
@@ -206,7 +206,7 @@ Manifest 預先檢查會拒絕已帶 `doi:` 或 `https://doi.org/` 的 EndNote D
 2. 文件中不得殘留暫時引用文字，以 `\{[^{}]*#\d+[^{}]*\}` 比對全文。
 3. 原生引用欄位數量等於 manifest 的引用筆數。計數規則為：欄位碼以 `ADDIN EN.CITE` 開頭者的數量，減去以 `ADDIN EN.CITE.DATA` 開頭者的數量；traveling library 內容較大時，EndNote 會將其移入巢狀資料欄位。
 4. `bibliography.expected` 為 true 時，必須恰有一個 `ADDIN EN.REFLIST` 欄位，且其結果文字非空白。
-5. 每筆 DOI 都需顯示為 `doi: https://doi.org/<DOI>`，且 resolver 前綴不可重複。
+5. 未標 `no_doi` 的 target，其 DOI 都需顯示為 `doi: https://doi.org/<DOI>`；resolver 前綴不可重複，也不可留下後面沒有 DOI 的 `doi: https://doi.org/` 字樣。
 6. manifest 中每個紀錄編號都要以 `<rec-number>N</rec-number>` 出現在某個引用欄位的 traveling library XML 中，且對應的作者姓氏出現在同一欄位。
 7. 每個 `author-year` 原生欄位的顯示結果都包含作者姓氏。
 8. 文件文字中不得出現 `Error!`、`Reference source not found`、`{Citation}` 或 `{Bibliography}` 等占位字串。

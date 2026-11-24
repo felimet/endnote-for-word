@@ -6,6 +6,19 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- A manifest target may cite a record without a DOI, such as a web page (EndNote reference
+  type 16), a patent (type 15), an extension article or a conference paper without one, through
+  an explicit `"no_doi": true`. DOI stays required by default. `precheck` still requires the
+  record to exist, to be live and to match the first-author surname and year, reports
+  `library_has_doi` when the record does have a DOI, and rejects `no_doi` together with `doi`
+  or as a non-boolean. Render takes these targets in the same pass as DOI targets, so the
+  author-year display mapping by field order stays aligned, and reports `no_doi_targets`.
+  Validation keeps every gate and skips only the visible DOI link of a `no_doi` target.
+- Validation fails a bibliography that prints `doi: https://doi.org/` with no DOI after it,
+  which an output style without Link Adjacent Text does for a `no_doi` record.
+
 ### Fixed
 
 - The `.sha256` files that `scripts/package_plugin.py` writes now end in LF on Windows too, so

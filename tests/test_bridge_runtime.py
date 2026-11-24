@@ -127,6 +127,51 @@ $result | ConvertTo-Json -Compress
 """
 
 
+# Loads the named bridge functions and $script: constants, then runs the test body. The body
+# reads its cases from a JSON file ($spec) and prints one JSON object.
+FUNCTION_HARNESS = r"""
+param([Parameter(Mandatory)][string]$Bridge, [Parameter(Mandatory)][string]$Cases)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+function Write-Log { param([string]$Level, [string]$Message) [Console]::Error.WriteLine("[$Level] $Message") }
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Bridge, [ref]$null, [ref]$null)
+$spec = [IO.File]::ReadAllText($Cases, [Text.Encoding]::UTF8) | ConvertFrom-Json
+foreach ($name in $spec.functions) {
+    $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    Invoke-Expression $definition.Extent.Text
+}
+foreach ($variable in $spec.variables) {
+    $assignment = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq ('$script:' + $variable) }, $true)
+    Invoke-Expression $assignment.Extent.Text
+}
+$result = [ordered]@{}
+"""
+
+MANIFEST_TARGET_BODY = r"""
+foreach ($case in $spec.targets.PSObject.Properties) {
+    try {
+        Assert-ManifestTarget -Target $case.Value -CitationId $case.Name
+        $result[$case.Name] = 'accepted'
+    }
+    catch { $result[$case.Name] = $_.Exception.Message }
+}
+foreach ($bibliography in $spec.bibliographies.PSObject.Properties) {
+    $fields = [pscustomobject]@{
+        bibliography_codes          = @('ADDIN EN.REFLIST')
+        bibliography_result_lengths = @($bibliography.Value.Length)
+        bibliography_results        = @($bibliography.Value)
+    }
+    $errors = New-Object System.Collections.Generic.List[string]
+    $warnings = New-Object System.Collections.Generic.List[string]
+    Add-BibliographyValidationProblems -Fields $fields -Manifest $spec.manifest -Errors $errors -Warnings $warnings
+    $result[$bibliography.Name] = @($errors)
+}
+$result | ConvertTo-Json -Compress -Depth 5
+"""
+
+
+
 def available_hosts() -> list[str]:
     return [path for path in (shutil.which(name) for name in POWERSHELL_HOSTS) if path]
 
@@ -312,6 +357,84 @@ class BridgeRuntimeTests(unittest.TestCase):
                 result = last_json_line(completed)
                 self.assertFalse(result["ok"])
                 self.assertTrue(result["error"].startswith("unformat is destructive"), result["error"])
+
+
+class BridgeFunctionTests(unittest.TestCase):
+    """Single bridge functions lifted out through the AST and driven with plain values."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.hosts = available_hosts()
+        if not cls.hosts:
+            raise unittest.SkipTest("No Windows PowerShell or PowerShell 7 host on PATH.")
+        cls._directory = tempfile.TemporaryDirectory(prefix="endnote-functions-")
+        cls.workspace = Path(cls._directory.name)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._directory.cleanup()
+
+    def run_functions(self, name: str, body: str, spec: dict) -> dict:
+        harness = self.workspace / f"{name}.ps1"
+        harness.write_text(FUNCTION_HARNESS + body, encoding="utf-8-sig")
+        cases = self.workspace / f"{name}.json"
+        cases.write_text(json.dumps(spec), encoding="utf-8")
+        results = {}
+        for host in self.hosts:
+            completed = run_host(host, ["-File", str(harness), "-Bridge", str(BRIDGE), "-Cases", str(cases)])
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            results[Path(host).name] = last_json_line(completed)
+        return results
+
+    def test_manifest_no_doi_opt_in_is_explicit_and_skips_only_the_visible_doi_gate(self) -> None:
+        doi_target = {"rec_number": 3, "author": "Wang", "year": 2022, "doi": "10.0000/fixture.0103"}
+        no_doi_target = {"rec_number": 1, "author": "Chen", "year": 2024, "no_doi": True}
+        spec = {
+            "functions": ["Get-OptionalProperty", "Assert-AllowedKeys", "ConvertTo-ManifestInteger",
+                          "Assert-CitationText", "Test-NoDoiTarget", "Assert-ManifestTarget",
+                          "Add-BibliographyValidationProblems"],
+            "variables": ["AllowedTargetKeys", "NoDoiTargetKey", "DoiPattern", "ForbiddenCitationTextPattern",
+                          "DoiResolverPrefix", "DuplicateDoiResolverPattern", "DanglingDoiResolverPattern"],
+            "targets": {
+                "withDoi": doi_target,
+                "noDoi": no_doi_target,
+                "noDoiAndDoi": {**no_doi_target, "doi": "10.0000/fixture.0103"},
+                "noDoiText": {**no_doi_target, "no_doi": "yes"},
+                "noDoiFalse": {**no_doi_target, "no_doi": False},
+                "missingDoi": {"rec_number": 1, "author": "Chen", "year": 2024},
+            },
+            "manifest": {
+                "bibliography": {"expected": True},
+                "citations": [{"id": "a", "targets": [doi_target]}, {"id": "b", "targets": [no_doi_target]}],
+            },
+            "bibliographies": {
+                "shown": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r[2] M. Chen, Web page, 2024.",
+                "hidden": "[1] H. Wang, Journal, 2022.\r[2] M. Chen, Web page, 2024.",
+                "dangling": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                            "[2] M. Chen, Web page, 2024, doi: https://doi.org/.",
+            },
+        }
+        missing = "Citation '{0}' requires a DOI for every target, or \"no_doi\": true for a record that has none."
+        expected = {
+            "withDoi": "accepted",
+            "noDoi": "accepted",
+            "noDoiAndDoi": "Citation 'noDoiAndDoi' sets no_doi and also carries doi; keep only the DOI.",
+            "noDoiText": "Citation 'noDoiText' no_doi must be true or false.",
+            "noDoiFalse": missing.format("noDoiFalse"),
+            "missingDoi": missing.format("missingDoi"),
+            "shown": [],
+            "hidden": [
+                "The bibliography does not visibly contain 'doi: https://doi.org/10.0000/fixture.0103'. "
+                "Check the output style Bibliography Templates."
+            ],
+            "dangling": [
+                "The bibliography prints 'doi: https://doi.org/' without a DOI after it. Wrap the output "
+                "style's DOI phrase in Link Adjacent Text so it disappears for a record without a DOI."
+            ],
+        }
+        for host, result in self.run_functions("manifest-target", MANIFEST_TARGET_BODY, spec).items():
+            with self.subTest(host=host):
+                self.assertEqual(result, expected)
 
 
 class DocumentLibraryTests(unittest.TestCase):
