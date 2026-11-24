@@ -174,9 +174,23 @@ Call `import_reference_file` with absolute paths:
 }
 ```
 
-The bridge opens that exact library even when EndNote already has another library open,
-confirms the absolute target through EndNote's recent-library registry value rather than a
-possibly ambiguous window title, passes the RIS file to `EndNote.exe`, and polls the
+The bridge opens that exact library even when EndNote already has another library open and
+waits until EndNote confirms it. A window title names only the file, so it counts only together
+with a signal that names the full path, for the same EndNote process:
+
+- `open_handle`: Windows Restart Manager (`RmGetList`) reports that the EndNote process holds
+  `<library>.Data\sdb\sdb.eni` open, and no other open EndNote library window carries the same
+  file name, so the library in front cannot be a same-name copy from another folder. Measured
+  on EndNote 21: an open library's `.enl`, `sdb.eni` and `pdb.eni` are held by EndNote, a closed
+  library's by no process, and every open library has its own window. The session only asks;
+  it never shuts down or restarts anything, and the window list is read with `EnumWindows`.
+- `recent_library`: only when Restart Manager cannot answer, EndNote's most recent library,
+  `Recent Libraries\File1`, is the exact path, which was the 1.5.2 rule. When Restart Manager
+  answers that the target is not held, `File1` confirms nothing; EndNote keeps it on the
+  library it opened at start-up while a forwarded library is open in front.
+
+The result reports the signal as `import_target_confirmed_by`. Neither the registry nor the
+library files are written. The bridge then passes the RIS file to `EndNote.exe`, and polls the
 read-only counter until the live count increases or the timeout expires. It reports
 `live_references_before`,
 `live_references_after`, and `imported_count`.
@@ -255,7 +269,10 @@ python scripts\endnote_library.py precheck --library "<LIBRARY>.enl" --manifest 
 
 `precheck` verifies, for every target, that the record exists, is not in the trash, that its
 first author surname matches the manifest `author` case-insensitively and accent-tolerantly,
-that its year and bare DOI match, and that the DOI resolves through doi.org. It reports every problem it finds, not just the first one, so a
+that its year and bare DOI match, and that the DOI resolves through doi.org. A target marked
+`"no_doi": true` replaces the two DOI checks with one: the record's DOI field must be empty
+and its URL and notes must hold no DOI, otherwise precheck reports `library_has_doi` and the
+DOI belongs in the record's DOI field and in the target. It reports every problem it finds, not just the first one, so a
 manifest with three bad targets takes one round trip to fix rather than three.
 
 This is the step that prevents the "select matching reference" modal dialog described in

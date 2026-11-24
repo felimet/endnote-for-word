@@ -127,6 +127,105 @@ $result | ConvertTo-Json -Compress
 """
 
 
+# Loads the named bridge functions and $script: constants, then runs the test body. The body
+# reads its cases from a JSON file ($spec) and prints one JSON object.
+FUNCTION_HARNESS = r"""
+param([Parameter(Mandatory)][string]$Bridge, [Parameter(Mandatory)][string]$Cases)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+function Write-Log { param([string]$Level, [string]$Message) [Console]::Error.WriteLine("[$Level] $Message") }
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Bridge, [ref]$null, [ref]$null)
+$spec = [IO.File]::ReadAllText($Cases, [Text.Encoding]::UTF8) | ConvertFrom-Json
+foreach ($name in $spec.functions) {
+    $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    Invoke-Expression $definition.Extent.Text
+}
+foreach ($variable in $spec.variables) {
+    $assignment = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq ('$script:' + $variable) }, $true)
+    Invoke-Expression $assignment.Extent.Text
+}
+$result = [ordered]@{}
+"""
+
+MANIFEST_TARGET_BODY = r"""
+foreach ($case in $spec.targets.PSObject.Properties) {
+    try {
+        Assert-ManifestTarget -Target $case.Value -CitationId $case.Name
+        $result[$case.Name] = 'accepted'
+    }
+    catch { $result[$case.Name] = $_.Exception.Message }
+}
+foreach ($bibliography in $spec.bibliographies.PSObject.Properties) {
+    $fields = [pscustomobject]@{
+        bibliography_codes          = @('ADDIN EN.REFLIST')
+        bibliography_result_lengths = @($bibliography.Value.Length)
+        bibliography_results        = @($bibliography.Value)
+    }
+    $errors = New-Object System.Collections.Generic.List[string]
+    $warnings = New-Object System.Collections.Generic.List[string]
+    Add-BibliographyValidationProblems -Fields $fields -Manifest $spec.manifest -Errors $errors -Warnings $warnings
+    $result[$bibliography.Name] = @($errors)
+}
+foreach ($bibliography in $spec.doiSuffixBibliographies.PSObject.Properties) {
+    $fields = [pscustomobject]@{
+        bibliography_codes          = @('ADDIN EN.REFLIST')
+        bibliography_result_lengths = @($bibliography.Value.Length)
+        bibliography_results        = @($bibliography.Value)
+    }
+    $errors = New-Object System.Collections.Generic.List[string]
+    $warnings = New-Object System.Collections.Generic.List[string]
+    Add-BibliographyValidationProblems -Fields $fields -Manifest $spec.doiSuffixManifest -Errors $errors -Warnings $warnings
+    $result[$bibliography.Name] = @($errors)
+}
+foreach ($payloads in $spec.payloads.PSObject.Properties) {
+    $errors = New-Object System.Collections.Generic.List[string]
+    $warnings = New-Object System.Collections.Generic.List[string]
+    Add-TravelingLibraryValidationProblems -Payloads @($payloads.Value) -Manifest $spec.manifest -Errors $errors -Warnings $warnings
+    $result[$payloads.Name] = @($errors)
+}
+$result | ConvertTo-Json -Compress -Depth 5
+"""
+
+IMPORT_CONFIRMATION_BODY = r"""
+foreach ($case in $spec.cases.PSObject.Properties) {
+    $holders = $null
+    if ($null -ne $case.Value.holders) { $holders = [int[]]@($case.Value.holders) }
+    $titles = $null
+    if ($null -ne $case.Value.titles) { $titles = [string[]]@($case.Value.titles) }
+    $confirmation = Resolve-ImportTargetConfirmation -LibraryFile $spec.library -Windows @($case.Value.windows) `
+        -RecentLibrary $case.Value.recent -HolderProcessIds $holders -LibraryWindowTitles $titles
+    if ($null -eq $confirmation) { $result[$case.Name] = $null }
+    else { $result[$case.Name] = '{0}:{1}' -f $confirmation.confirmed_by, $confirmation.process_id }
+}
+$result | ConvertTo-Json -Compress
+"""
+
+FILE_HOLDER_BODY = r"""
+foreach ($path in @($spec.held, $spec.free)) {
+    $ids = Get-FileHolderProcessIds -Path $path
+    $result[[IO.Path]::GetFileName($path)] = $ids
+}
+# A hidden window of this process, so the window list is checked without EndNote.
+Add-Type -AssemblyName System.Windows.Forms
+$form = New-Object System.Windows.Forms.Form
+$form.Text = 'EndNote 21 - Probe Library.enl'
+$null = $form.Handle
+$result['own_windows'] = @([EndNoteForWordAgent.TopLevelWindows]::GetTitles([int[]]@($PID), 'WindowsForms'))
+$result['other_class'] = @([EndNoteForWordAgent.TopLevelWindows]::GetTitles([int[]]@($PID), 'Afx:'))
+# A same-class window that is no library, like EndNote 21.5's hidden com.endnote.async_tasks.
+$tasks = New-Object System.Windows.Forms.Form
+$tasks.Text = 'com.endnote.async_tasks'
+$null = $tasks.Handle
+function Get-Process { [CmdletBinding()] param([string]$Name) [pscustomobject]@{ Id = $PID } }
+$script:LibraryWindowClassPrefix = 'WindowsForms'
+$result['library_windows'] = Get-EndNoteLibraryWindowTitles
+$tasks.Dispose()
+$form.Dispose()
+$result | ConvertTo-Json -Compress
+"""
+
+
 def available_hosts() -> list[str]:
     return [path for path in (shutil.which(name) for name in POWERSHELL_HOSTS) if path]
 
@@ -312,6 +411,257 @@ class BridgeRuntimeTests(unittest.TestCase):
                 result = last_json_line(completed)
                 self.assertFalse(result["ok"])
                 self.assertTrue(result["error"].startswith("unformat is destructive"), result["error"])
+
+
+class BridgeFunctionTests(unittest.TestCase):
+    """Single bridge functions lifted out through the AST and driven with plain values."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.hosts = available_hosts()
+        if not cls.hosts:
+            raise unittest.SkipTest("No Windows PowerShell or PowerShell 7 host on PATH.")
+        cls._directory = tempfile.TemporaryDirectory(prefix="endnote-functions-")
+        cls.workspace = Path(cls._directory.name)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._directory.cleanup()
+
+    def run_functions(self, name: str, body: str, spec: dict) -> dict:
+        harness = self.workspace / f"{name}.ps1"
+        harness.write_text(FUNCTION_HARNESS + body, encoding="utf-8-sig")
+        cases = self.workspace / f"{name}.json"
+        cases.write_text(json.dumps(spec), encoding="utf-8")
+        results = {}
+        for host in self.hosts:
+            completed = run_host(host, ["-File", str(harness), "-Bridge", str(BRIDGE), "-Cases", str(cases)])
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            results[Path(host).name] = last_json_line(completed)
+        return results
+
+    def test_manifest_no_doi_opt_in_is_explicit_and_skips_only_the_visible_doi_gate(self) -> None:
+        doi_target = {"rec_number": 3, "author": "Wang", "year": 2022, "doi": "10.0000/fixture.0103"}
+        no_doi_target = {"rec_number": 1, "author": "Chen", "year": 2024, "no_doi": True}
+        doi_record = ("<EndNote><Cite><Author>Wang</Author><record><rec-number>3</rec-number><contributors><author>Wang, H."
+                      "</author></contributors><electronic-resource-num>10.0000/fixture.0103</electronic-resource-num>"
+                      "</record></Cite></EndNote>")
+        spec = {
+            "functions": ["Get-OptionalProperty", "Assert-AllowedKeys", "ConvertTo-ManifestInteger",
+                          "Assert-CitationText", "Test-NoDoiTarget", "Assert-ManifestTarget",
+                          "Add-BibliographyValidationProblems", "Add-TravelingLibraryValidationProblems"],
+            "variables": ["AllowedTargetKeys", "NoDoiTargetKey", "DoiPattern", "ForbiddenCitationTextPattern",
+                          "DoiResolverPrefix", "DuplicateDoiResolverPattern", "DanglingDoiResolverPattern",
+                          "RecordNumberElementFormat", "TravelingRecordDoiPattern",
+                          "TravelingRecordDoiElsewherePattern"],
+            "targets": {
+                "withDoi": doi_target,
+                "noDoi": no_doi_target,
+                "noDoiAndDoi": {**no_doi_target, "doi": "10.0000/fixture.0103"},
+                "noDoiText": {**no_doi_target, "no_doi": "yes"},
+                "noDoiFalse": {**no_doi_target, "no_doi": False},
+                "missingDoi": {"rec_number": 1, "author": "Chen", "year": 2024},
+            },
+            "manifest": {
+                "bibliography": {"expected": True},
+                "citations": [{"id": "a", "targets": [doi_target]}, {"id": "b", "targets": [no_doi_target]}],
+            },
+            # A DOI target whose own suffix holds 'doi:'; DoiPattern accepts it.
+            "doiSuffixManifest": {
+                "bibliography": {"expected": True},
+                "citations": [{"id": "c", "targets": [{**doi_target, "doi": "10.1000/abc-doi:5"}]}],
+            },
+            "bibliographies": {
+                "shown": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r[2] M. Chen, Web page, 2024.",
+                "hidden": "[1] H. Wang, Journal, 2022.\r[2] M. Chen, Web page, 2024.",
+                "dangling": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                            "[2] M. Chen, Web page, 2024, doi: https://doi.org/.",
+                # EndNote's template rules drop 'https://doi.org/' with the empty DOI field but keep
+                # the space-separated 'doi:' label.
+                "orphanLabel": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                               "[2] M. Chen, Web page. doi: https://example.org/page (accessed Nov. 1, 2026).",
+                "orphanLabelAtEnd": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                                    "[2] M. Chen, Web page, 2024, doi: .",
+                "orphanLabelMidList": "[1] M. Chen, Web page, 2024, doi:\r"
+                                      "[2] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.",
+                # The leftover label is followed by whatever the template prints next.
+                "orphanBeforeOnline": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                                      "[2] M. Chen, Web page, 2024, doi: . [Online]. Available: https://example.org/page",
+                "orphanUpperBeforeOnline": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                                           "[2] M. Chen, Web page, 2024, DOI: [Online]. Available: https://example.org/page",
+                "orphanBeforeAccessed": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                                        "[2] M. Chen, Web page, 2024, doi: (accessed Nov. 1, 2026).",
+                # An unnumbered style: the next entry starts with a letter.
+                "orphanBeforeAuthorEntry": "Chen, M. (2024). Web page. doi:\r"
+                                           "Wang, H. (2022). Journal. doi: https://doi.org/10.0000/fixture.0103.",
+                # 'doi:' inside a token or before ordinary words is no leftover label.
+                "doiInsideTokens": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                                   "[2] M. Chen, Why doi: names persist, Web page, urn:doi:10.1000/abc, 2024.",
+            },
+            "doiSuffixBibliographies": {
+                "doiSuffix": "[1] H. Wang, Journal, doi: https://doi.org/10.1000/abc-doi:5.",
+            },
+            "payloads": {
+                # Shapes measured in an EndNote 21 document: a DOI record carries
+                # <electronic-resource-num>, a web page without a DOI carries none.
+                "noDoiRecordClean": [
+                    "<EndNote><Cite><Author>Wang</Author><record><rec-number>3</rec-number><contributors><author>Wang, H.</author>"
+                    "</contributors><electronic-resource-num>10.0000/fixture.0103</electronic-resource-num></record></Cite>"
+                    "<Cite><Author>Chen</Author><record><rec-number>1</rec-number><ref-type name=\"Web Page\">12</ref-type>"
+                    "<contributors><author>Chen, M.</author></contributors><electronic-resource-num></electronic-resource-num>"
+                    "<language>eng</language></record></Cite></EndNote>",
+                ],
+                # The no_doi record comes first in one merged payload: only its own record is read.
+                "noDoiRecordBeforeDoiRecord": [
+                    "<EndNote><Cite><Author>Chen</Author><record><rec-number>1</rec-number><ref-type name=\"Web Page\">12</ref-type>"
+                    "<contributors><author>Chen, M.</author></contributors><urls><related-urls><url>https://example.org/page</url>"
+                    "</related-urls></urls></record></Cite><Cite><Author>Wang</Author><record><rec-number>3</rec-number>"
+                    "<contributors><author>Wang, H.</author></contributors><urls><related-urls><url>https://doi.org/10.0000/fixture.0103"
+                    "</url></related-urls></urls><electronic-resource-num>10.0000/fixture.0103</electronic-resource-num>"
+                    "</record></Cite></EndNote>",
+                ],
+                "noDoiRecordDoiInUrl": [
+                    doi_record,
+                    "<EndNote><Cite><Author>Chen</Author><record><rec-number>1</rec-number><contributors><author>Chen, M.</author>"
+                    "</contributors><urls><related-urls><url><style face=\"normal\">https://doi.org/10.0000/fixture.0101</style>"
+                    "</url></related-urls></urls></record></Cite></EndNote>",
+                ],
+                "noDoiRecordDoiInNotes": [
+                    doi_record,
+                    "<EndNote><Cite><Author>Chen</Author><record><rec-number>1</rec-number><contributors><author>Chen, M.</author>"
+                    "</contributors><notes>Imported. doi:10.0000/fixture.0101</notes></record></Cite></EndNote>",
+                ],
+                "noDoiRecordHasDoi": [
+                    "<EndNote><Cite><Author>Wang</Author><record><rec-number>3</rec-number><contributors><author>Wang, H.</author>"
+                    "</contributors><electronic-resource-num>10.0000/fixture.0103</electronic-resource-num></record></Cite></EndNote>",
+                    "<EndNote><Cite><Author>Chen</Author><record><rec-number>1</rec-number><contributors><author>Chen, M.</author>"
+                    "</contributors><electronic-resource-num><style face=\"normal\">10.0000/fixture.0101</style>"
+                    "</electronic-resource-num></record></Cite></EndNote>",
+                ],
+            },
+        }
+        missing = "Citation '{0}' requires a DOI for every target, or \"no_doi\": true for a record that has none."
+        dangling = ("The bibliography prints a 'doi:' label without 'https://doi.org/<DOI>' after it: '{0}'. Tie the "
+                    "output style's 'doi:' label to the DOI field with Link Adjacent Text so it disappears for a "
+                    "record without a DOI.")
+        elsewhere = ("Citation 'b': rec-number 1 is marked no_doi, but its traveling library record carries the DOI "
+                     "'10.0000/fixture.0101' in <{0}>. Move it into the record's DOI field in EndNote, remove no_doi "
+                     "and cite the target with doi instead.")
+        expected = {
+            "withDoi": "accepted",
+            "noDoi": "accepted",
+            "noDoiAndDoi": "Citation 'noDoiAndDoi' sets no_doi and also carries doi; keep only the DOI.",
+            "noDoiText": "Citation 'noDoiText' no_doi must be true or false.",
+            "noDoiFalse": missing.format("noDoiFalse"),
+            "missingDoi": missing.format("missingDoi"),
+            "shown": [],
+            "hidden": [
+                "The bibliography does not visibly contain 'doi: https://doi.org/10.0000/fixture.0103'. "
+                "Check the output style Bibliography Templates."
+            ],
+            "dangling": [dangling.format("doi: https://doi.org/.")],
+            "orphanLabel": [dangling.format("doi: https://example.org/page (accessed ")],
+            "orphanLabelAtEnd": [dangling.format("doi: .")],
+            "orphanLabelMidList": [dangling.format("doi:\r[2] H. Wang, Journal, doi: https://")],
+            "orphanBeforeOnline": [dangling.format("doi: . [Online]. Available: https://exam")],
+            "orphanUpperBeforeOnline": [dangling.format("DOI: [Online]. Available: https://exampl")],
+            "orphanBeforeAccessed": [dangling.format("doi: (accessed Nov. 1, 2026).")],
+            "orphanBeforeAuthorEntry": [dangling.format("doi:\rWang, H. (2022). Journal. doi: http")],
+            "doiInsideTokens": [],
+            "doiSuffix": [],
+            "noDoiRecordClean": [],
+            "noDoiRecordBeforeDoiRecord": [],
+            "noDoiRecordDoiInUrl": [elsewhere.format("url")],
+            "noDoiRecordDoiInNotes": [elsewhere.format("notes")],
+            "noDoiRecordHasDoi": [
+                "Citation 'b': rec-number 1 is marked no_doi, but its traveling library record carries the DOI "
+                "'10.0000/fixture.0101'. Remove no_doi, cite that DOI and make the style print it."
+            ],
+        }
+        for host, result in self.run_functions("manifest-target", MANIFEST_TARGET_BODY, spec).items():
+            with self.subTest(host=host):
+                self.assertEqual(result, expected)
+
+    def test_import_target_needs_its_title_and_a_full_path_signal_from_the_same_process(self) -> None:
+        library = r"E:\Projects\Grading\Lib [2024].enl"
+        front = [{"process_id": 42, "title": "EndNote 21 - Lib [2024].enl"}]
+        other = r"E:\Other\My EndNote Library.enl"
+        # Library windows behind the front one: the start-up library and the target.
+        open_libraries = ["EndNote 21 - Lib [2024].enl", "EndNote 21 - My EndNote Library.enl"]
+        spec = {
+            "functions": ["Resolve-ImportTargetConfirmation"],
+            "variables": ["EndNoteProcessName"],
+            "library": library,
+            "cases": {
+                # Measured failure of 1.5.2: the window is up, File1 still names the start-up library.
+                "handleWhileRecentNamesAnother": {"windows": front, "recent": other, "holders": [42], "titles": open_libraries},
+                "titleWithoutProductPrefix": {"windows": [{"process_id": 42, "title": "lib [2024].ENL"}], "recent": None,
+                                              "holders": [42], "titles": ["lib [2024].ENL"]},
+                "recentLibraryWithoutRestartManager": {"windows": front, "recent": library.upper(), "holders": None, "titles": None},
+                "heldByAnotherProcessOnly": {"windows": front, "recent": other, "holders": [7], "titles": open_libraries},
+                "heldButAnotherLibraryInFront": {"windows": [{"process_id": 42, "title": "EndNote 21 - Other.enl"}], "recent": library,
+                                                 "holders": [42], "titles": open_libraries},
+                "sameSuffixOtherName": {"windows": [{"process_id": 42, "title": "EndNote 21 - MyLib [2024].enl"}], "recent": library,
+                                        "holders": [42], "titles": ["EndNote 21 - MyLib [2024].enl"]},
+                "noEndNoteWindow": {"windows": [], "recent": library, "holders": [42], "titles": []},
+                # A same-name library from another folder is open too: the one in front may be it.
+                "sameNameLibraryAlsoOpen": {"windows": front, "recent": other, "holders": [42],
+                                            "titles": ["EndNote 21 - Lib [2024].enl", "Lib [2024].enl"]},
+                # Restart Manager answered: the target is not held, so File1 must not confirm it.
+                "recentLibraryButNotHeld": {"windows": front, "recent": library, "holders": [], "titles": ["EndNote 21 - Lib [2024].enl"]},
+                "recentLibraryHeldElsewhere": {"windows": front, "recent": library, "holders": [7], "titles": ["EndNote 21 - Lib [2024].enl"]},
+                # No window list: the same-name check cannot run, so the handle does not confirm.
+                "handleWithoutWindowList": {"windows": front, "recent": other, "holders": [42], "titles": None},
+                # The front title is not among the library windows found: the list is not trusted.
+                "handleWithEmptyWindowList": {"windows": front, "recent": other, "holders": [42], "titles": []},
+                # 'Project - Lib [2024].enl' is another file, so it neither blocks nor passes for the target.
+                "longerNameEndingInTarget": {"windows": front, "recent": other, "holders": [42],
+                                             "titles": ["EndNote 21 - Lib [2024].enl", "EndNote 21 - Project - Lib [2024].enl"]},
+                "longerNameInFront": {"windows": [{"process_id": 42, "title": "EndNote 21 - Project - Lib [2024].enl"}],
+                                      "recent": library, "holders": [42], "titles": ["EndNote 21 - Project - Lib [2024].enl"]},
+            },
+        }
+        expected = {
+            "handleWhileRecentNamesAnother": "open_handle:42",
+            "titleWithoutProductPrefix": "open_handle:42",
+            "recentLibraryWithoutRestartManager": "recent_library:42",
+            "heldByAnotherProcessOnly": None,
+            "heldButAnotherLibraryInFront": None,
+            "sameSuffixOtherName": None,
+            "noEndNoteWindow": None,
+            "sameNameLibraryAlsoOpen": None,
+            "recentLibraryButNotHeld": None,
+            "recentLibraryHeldElsewhere": None,
+            "handleWithoutWindowList": None,
+            "handleWithEmptyWindowList": None,
+            "longerNameEndingInTarget": "open_handle:42",
+            "longerNameInFront": None,
+        }
+        for host, result in self.run_functions("import-confirmation", IMPORT_CONFIRMATION_BODY, spec).items():
+            with self.subTest(host=host):
+                self.assertEqual(result, expected)
+
+    def test_native_helpers_name_file_holders_and_list_windows_by_class(self) -> None:
+        held = self.workspace / "held.txt"
+        free = self.workspace / "free.txt"
+        held.write_text("held", encoding="utf-8")
+        free.write_text("free", encoding="utf-8")
+        spec = {
+            "functions": ["Test-NativeHelpers", "Get-FileHolderProcessIds", "Get-EndNoteLibraryWindowTitles"],
+            "variables": ["RestartManagerSource", "RestartManagerTypeName", "RestartManagerUnavailable", "RestartManagerWarning",
+                          "EndNoteProcessName", "LibraryExtension"],
+            "held": str(held),
+            "free": str(free),
+        }
+        with held.open("rb"):
+            results = self.run_functions("file-holders", FILE_HOLDER_BODY, spec)
+        for host, result in results.items():
+            with self.subTest(host=host):
+                self.assertIn(os.getpid(), result["held.txt"])
+                self.assertEqual(result["free.txt"], [])
+                self.assertIn("EndNote 21 - Probe Library.enl", result["own_windows"])
+                self.assertEqual(result["other_class"], [])
+                self.assertEqual(result["library_windows"], ["EndNote 21 - Probe Library.enl"])
 
 
 class DocumentLibraryTests(unittest.TestCase):

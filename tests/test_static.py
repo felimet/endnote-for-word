@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 PACKAGE_NAME = "endnote-for-word"
-RELEASE_VERSION = "1.5.2"
+RELEASE_VERSION = "1.6.0"
 RELEASE_AUTHOR = "Jia-Ming Zhou (Felimet)"
 SKILL_DIRECTORY = ROOT / "skills" / PACKAGE_NAME
 SKILL_PATH = SKILL_DIRECTORY / "SKILL.md"
@@ -569,6 +569,10 @@ class ManifestFixtureTests(unittest.TestCase):
                         self.assertGreater(target["rec_number"], 0)
                         self.assertTrue(target["author"])
                         self.assertIsInstance(target["year"], int)
+                        if target.get("no_doi") is True:
+                            # The explicit opt-in for a record without a DOI excludes a doi key.
+                            self.assertNotIn("doi", target)
+                            continue
                         self.assertRegex(target["doi"], r"(?i)^10\.\d{4,9}/[!-~]+$")
                         self.assertNotIn("https://doi.org/", target["doi"].lower())
                     if citation.get("display") == "author-year":

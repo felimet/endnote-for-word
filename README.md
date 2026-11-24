@@ -10,7 +10,7 @@ EndNote for Word is an installable AI citation-management toolkit for Microsoft 
 - Replaces `{{CITE:id}}` markers in a DOCX with real CWYW citations, so every citation becomes an `ADDIN EN.CITE` field carrying an EndNote traveling library, and the bibliography becomes an `ADDIN EN.REFLIST` field.
 - Never types citation text, never fabricates field codes in OOXML, and never passes off a plain-text reference list as a real bibliography.
 - Reads your `.enl` library through a read-only snapshot so an agent can search for references and confirm every record number before Word is ever opened. RIS import is the sole library-writing action and EndNote itself performs it.
-- Uses IEEE by default, requires a DOI for every cited reference, verifies each DOI through doi.org, and rejects doubled resolver prefixes.
+- Uses IEEE by default, requires a DOI for every cited reference, verifies each DOI through doi.org, and rejects doubled resolver prefixes. A record that has no DOI, such as a web page, patent or extension article, is cited only through an explicit per-target `"no_doi": true`, and the pre-check confirms that the record really has none.
 - Supports both IEEE Default Format `[x]` and EndNote's Display as Author (Year), which produces forms such as `Author et al. [x]` for narrative prose.
 - Preserves output-style-owned narrative punctuation. Forms such as `Hernandez, et al. [1]` are normal EndNote output and are not downgraded to typed authors or Default Format merely to remove a comma.
 - Pre-checks the manifest against the library and against the installed output styles, because an unknown record number or an unknown style name makes EndNote open a modal dialog that blocks automation until the process is killed.
@@ -136,7 +136,7 @@ ChatGPT cannot connect directly to the bundled local stdio MCP command. It requi
 2. **Choose a style.** List the installed `.ens` output styles and pick an exact name. A style name that does not resolve to an installed file makes EndNote open a modal dialog and hangs the run.
 3. **Find the references.** Search the `.enl` library read-only and collect the record numbers, first-author surnames, years, and bare DOIs.
 4. **Write the manifest.** One entry per citation, each with a unique marker and an explicit display decision. Use `author-year` only when the citation is a grammatical part of the sentence; use `default` for claim support and merged citations.
-5. **Pre-check.** Verify every record exists, is live, matches surname, year, and DOI, stores a bare DOI, and resolves successfully through doi.org.
+5. **Pre-check.** Verify every record exists, is live, matches surname, year, and DOI, stores a bare DOI, and resolves successfully through doi.org. For a `no_doi` target, verify instead that the record holds no DOI: its DOI field is empty and its URL and notes carry no DOI-like string.
 6. **Render silently.** The bridge keeps Word hidden, starts EndNote hidden when needed, creates native citation fields, applies `ENAuthorYearFormat` only where requested, and saves atomically.
 7. **Validate.** Re-open the result read-only and run every gate below.
 
@@ -175,7 +175,7 @@ See [`examples/example-manifest.json`](examples/example-manifest.json) for a com
 | `citations` | Non-empty array. Unknown top-level and per-citation keys are rejected. |
 | `id` | Matches `^[A-Za-z][A-Za-z0-9_-]*$` and is globally unique. |
 | `marker` | Globally unique, and must occur exactly once in the document. |
-| `targets` | Non-empty. Each target has an integer `rec_number` greater than zero, a non-empty `author` surname, an integer `year`, and a bare `doi`. |
+| `targets` | Non-empty. Each target has an integer `rec_number` greater than zero, a non-empty `author` surname, an integer `year`, and either a bare `doi` or `"no_doi": true` for a record without a DOI, never both. |
 | `display` | `default` for `[x]`, or `author-year` for `Author et al. [x]` under IEEE. `author-year` requires one target. |
 | `pages` | Optional. Matches `^[0-9]+(\s*-\s*[0-9]+)?$`. Allowed only when `targets` has exactly one entry. |
 | `suffix` | Optional free text such as `", p. 99"`. Allowed only when `targets` has exactly one entry. |
@@ -206,7 +206,7 @@ The manifest precheck refuses records whose EndNote DOI field already contains `
 2. No residual temporary citation text remains, matched with `\{[^{}]*#\d+[^{}]*\}` over the document text.
 3. The native citation field count equals the manifest citation count. Counting rule: fields whose code starts with `ADDIN EN.CITE`, minus fields whose code starts with `ADDIN EN.CITE.DATA`, because a large traveling library payload is moved into a nested data field.
 4. When `bibliography.expected` is true, exactly one `ADDIN EN.REFLIST` field exists and its result text is not empty.
-5. Every DOI is visibly printed as `doi: https://doi.org/<DOI>`, with no doubled resolver prefix.
+5. Every DOI of a target without `no_doi` is visibly printed as `doi: https://doi.org/<DOI>`, with no doubled resolver prefix and no empty `doi:` label (one followed only by punctuation, the end of the entry or a non-DOI link). A `no_doi` target is exempt only while its traveling-library record carries no DOI.
 6. Every manifest record number appears as `<rec-number>N</rec-number>` in some citation field's traveling library XML, and the matching author surname appears in the same field.
 7. Every `author-year` native field result visibly contains its author surname.
 8. The document text contains no `Error!`, `Reference source not found`, `{Citation}`, or `{Bibliography}` placeholder strings.
@@ -220,7 +220,7 @@ The manifest precheck refuses records whose EndNote DOI field already contains `
 | No citation prefixes | The backslash prefix syntax, for example `{see \Thomsen, 2023 #1}`, opens a modal EndNote dialog that blocks automation. The manifest rejects `prefix` outright. |
 | No excluded authors or years | `{\Thomsen, 2023 #1}` and the `ENExcludeAuthor` family are dialog-driven and hang the run. Use `suffix` text instead when the style permits it. |
 | Library database safety | Searches read a temporary snapshot. The tool never edits `sdb.eni`; explicit RIS import is delegated to EndNote Direct Export. |
-| Adding references is automated | `import_reference_file` opens the exact target library, sends RIS to EndNote, reports the count delta, and requires a fresh DOI search for assigned record numbers. A new target may be cloned only from a zero-record library while EndNote is fully closed. |
+| Adding references is automated | `import_reference_file` opens the exact target library, waits until EndNote shows it in front, its process holds that library's database open and no other open library has the same file name, sends RIS to EndNote, reports the count delta, and requires a fresh DOI search for assigned record numbers. A new target may be cloned only from a zero-record library while EndNote is fully closed. |
 | Bibliography position is the CWYW default | EndNote places the reference list where Cite While You Write puts it, normally at the end of the document. Move it in EndNote or in Word if you need it elsewhere; this tool does not relocate it. |
 | Instant formatting is not toggled | The CWYW toggle macro has no read-back, so calling it blindly would flip an unknown state. Change it in the EndNote ribbon if you need to. |
 | Converting citations to plain text is manual | The CWYW macro behind it, `ENRemoveFieldCodes`, raises a modal confirmation dialog and never returns under automation, so there is no `remove-field-codes` action and no MCP tool for it. Do it yourself from the Word ribbon with **EndNote > Convert Citations and Bibliography > Convert to Plain Text**, which produces a new copy and leaves the original field codes intact. The result is one-way: EndNote can no longer update the citations in the converted copy. |

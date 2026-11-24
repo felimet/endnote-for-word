@@ -24,7 +24,9 @@ dialog and blocks the run.
    dialog, which hangs the automation permanently.
 4. Verify the library file exists together with its sibling `.Data` directory.
 5. Run the read-only manifest precheck. Every target must match its library record, its DOI
-   field must be bare, and the DOI must resolve through the official doi.org Proxy API.
+   field must be bare, and the DOI must resolve through the official doi.org Proxy API. A
+   target marked `"no_doi": true` must instead point at a record whose DOI field is empty
+   and whose URL and notes hold no DOI.
 6. `Start-EndNoteWithLibrary`. When no `EndNote` process owns a main window, start the
    EndNote executable with the library path and poll every 250 ms until a process reports
    `MainWindowHandle -ne 0`. When EndNote is already running, do not start a second
@@ -82,11 +84,23 @@ Direct Export without modifying `sdb.eni` itself.
         { "rec_number": 3, "author": "Bernhard", "year": 2020, "doi": "10.0000/fixture.0003" }
       ],
       "display": "default"
+    },
+    {
+      "id": "lin2021patent",
+      "marker": "{{CITE:lin2021patent}}",
+      "targets": [ { "rec_number": 4, "author": "Lin", "year": 2021, "no_doi": true } ]
     }
   ],
   "bibliography": { "expected": true }
 }
 ```
+
+The third entry cites a record that has no DOI, here a patent. `"no_doi": true` is the only way
+to omit `doi`, it is set per target, and it is rejected together with a `doi` key. The
+precheck still requires the record to exist, to be live and to match the surname and year, and
+it reports `library_has_doi` when the record does carry a DOI, in its DOI field or in its
+URL or notes, which then belongs in the record's DOI field and in the target. Render handles these targets in the same pass as every other citation, and validation
+skips only their visible DOI link.
 
 Save the manifest as UTF-8; a byte order mark is optional. The bridge and the precheck both
 decode it strictly and reject UTF-16 or a legacy code page such as cp950 or cp936 with
@@ -117,7 +131,8 @@ Every rule below is a hard failure on the bridge side. There are no warnings in
 | `targets[].rec_number` | Integer greater than 0. |
 | `targets[].author` | Non empty string. |
 | `targets[].year` | Integer. |
-| `targets[].doi` | Bare ASCII DOI matching `^10\.\d{4,9}/[!-~]+$` case insensitively. A `doi:` or resolver prefix is rejected. |
+| `targets[].doi` | Bare ASCII DOI matching `^10\.\d{4,9}/[!-~]+$` case insensitively. A `doi:` or resolver prefix is rejected. Required unless `no_doi` is true. |
+| `targets[].no_doi` | Optional JSON boolean. `true` marks a record without a DOI and forbids a `doi` key on the same target; `false` or absent keeps the DOI required. |
 | `display` | Optional `default` or `author-year`; omitted means `default`. `author-year` requires exactly one target. |
 | `pages` | Optional string, must match `^[0-9]+(\s*-\s*[0-9]+)?$`. |
 | `suffix` | Optional string. |
@@ -130,8 +145,8 @@ Every rule below is a hard failure on the bridge side. There are no warnings in
 Two further pre conditions are enforced outside `Assert-Manifest`, both before Word opens:
 
 1. Every target must pass `precheck_endnote_manifest`, which checks record identity, bare DOI
-   storage, manifest DOI equality, and live resolution through doi.org. A missing record or
-   unresolved DOI blocks rendering.
+   storage, manifest DOI equality, and live resolution through doi.org, or for a `no_doi`
+   target an empty record DOI field. A missing record or unresolved DOI blocks rendering.
 2. The requested style name must resolve to an installed `.ens` file. Use
    `list_endnote_styles` first.
 
@@ -364,6 +379,7 @@ the render result to carry these fields:
 | `author_year_citations` | Number converted with EndNote's `ENAuthorYearFormat`. |
 | `targets` | Number of individual targets across those citations. |
 | `doi_verified` | Number of targets whose DOI resolved successfully before Word opened. |
+| `no_doi_targets` | Number of targets marked `no_doi` whose record was confirmed to have no DOI. |
 | `style` | Style written into `EN.Layout`. |
 | `bibliography_present` | Whether an `ADDIN EN.REFLIST` field exists. |
 | `endnote_preexisting` | True when EndNote was already running and the bridge did not start it. |
@@ -381,7 +397,13 @@ Always run `validate` afterwards. It applies ten gates, and any failure sets
 4. When `bibliography.expected` is true, exactly one `ADDIN EN.REFLIST` field exists and
    its `Result.Text` is non empty after trimming.
 5. Every cited DOI is visibly present as `doi: https://doi.org/<DOI>`, and no duplicated
-   DOI resolver prefix occurs.
+   DOI resolver prefix occurs. A target marked `no_doi` is skipped only while its record in
+   the traveling library XML carries no `<electronic-resource-num>` text and no DOI in its
+   `<url>` or `<notes>`; otherwise gate 6 fails it. A leftover `doi:` label, one that starts a
+   word and is followed by the end of the entry, by punctuation (`. [Online]`, `(accessed`)
+   or by a link other than `https://doi.org/10.`, fails the gate: EndNote printed the style's
+   space-separated label for an empty DOI field. A `doi:` inside a DOI, a URN or a title does
+   not.
 6. Every manifest `rec_number` appears in some EN.CITE traveling library XML as
    `<rec-number>N</rec-number>`, and its `author` surname appears in the same field's XML.
    A record whose payload was moved into a nested `ADDIN EN.CITE.DATA` field is matched

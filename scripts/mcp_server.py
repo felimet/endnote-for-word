@@ -36,7 +36,7 @@ from typing import Any, BinaryIO
 
 
 SERVER_NAME = "endnote-for-word"
-SERVER_VERSION = "1.5.2"
+SERVER_VERSION = "1.6.0"
 # Absolute: main() may leave the folder the server was started in.
 SCRIPT_PATH = Path(__file__).resolve().with_name("endnote-word.ps1")
 SCRIPT_DIRECTORY = SCRIPT_PATH.parent
@@ -304,7 +304,9 @@ TOOLS: list[dict[str, Any]] = [
             "Verify every citation target in a manifest against the library before Word is opened: "
             "the record must exist, must not be in the trash, and its first-author surname and year "
             "must match. Every target must have a matching bare DOI, and every DOI must resolve through "
-            "the official doi.org Proxy REST API. A missing record makes EndNote open a blocking "
+            "the official doi.org Proxy REST API; a target for a record without a DOI (web page, patent, "
+            "extension article) must say so with \"no_doi\": true, and the record's DOI field must then be "
+            "empty and its URL and notes hold no DOI. A missing record makes EndNote open a blocking "
             "'select matching reference' dialog, so this check is mandatory before render. Read-only; "
             "reports every problem, not just the first."
         ),
@@ -403,7 +405,9 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Open a DOCX read-only and verify the citation gates: no leftover {{CITE:}} markers or "
             "temporary citation text, the expected number of ADDIN EN.CITE fields, a non-empty "
-            "ADDIN EN.REFLIST bibliography with every visible canonical DOI link, no doubled DOI "
+            "ADDIN EN.REFLIST bibliography with the visible canonical DOI link of every target that "
+            "has one (no_doi targets are exempt while their traveling-library record carries no DOI), "
+            "no dangling 'doi:' label, no doubled DOI "
             "resolver, every requested Author (Year) display, every manifest rec_number present "
             "in the traveling library XML, and the EN.Layout and EN.Libraries document variables. Supply "
             "manifest_path to enable the manifest-dependent gates."
@@ -560,7 +564,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "import_reference_file",
         "description": (
             "Import a RIS file into the exact EndNote library supplied by library_path through "
-            "EndNote's native Direct Export route, then report the before/after live-reference "
+            "EndNote's native Direct Export route, once EndNote shows a library of that file name in "
+            "front, no other open library has that file name, and EndNote holds that exact library's "
+            "database open, then report the before/after live-reference "
             "counts. When the user names no library, omit library_path and pass document_path: "
             "the target is <document stem>.enl beside the DOCX, and it is refused when it does "
             "not exist yet but the DOCX already carries EndNote fields. A missing target is "
@@ -1823,7 +1829,8 @@ def _handle(message: dict[str, Any]) -> dict[str, Any] | None:
                     "Probe first, then resolve every rec_number with search_endnote_library and "
                     "confirm the output style with list_endnote_styles. Run "
                     "precheck_endnote_manifest before rendering. Every cited record must carry a bare "
-                    "DOI that resolves at doi.org. Use IEEE by default. Set display='author-year' only "
+                    "DOI that resolves at doi.org, unless its target sets no_doi: true because the record "
+                    "has none. Use IEEE by default. Set display='author-year' only "
                     "when the author is a grammatical part of the sentence; use display='default' for "
                     "claim support and merged citations. Render into a new file, then validate. Render, "
                     "update and set-style return a job_id at once; follow it with get_endnote_job_status "
