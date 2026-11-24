@@ -149,7 +149,7 @@ Treat any of these as a failed deliverable. `validate` returns `ok: false` and e
 2. Any residual temporary citation text, matched by `\{[^{}]*#\d+[^{}]*\}` over the document text. Leftover braces mean CWYW did not format that citation.
 3. A native citation field count, computed with the counting rule above, that does not equal the manifest citation count. Without a manifest the count must still be at least 1.
 4. When `bibliography.expected` is true, anything other than exactly one `ADDIN EN.REFLIST` field whose result text is non-empty after trimming.
-5. Any cited DOI missing from the bibliography's visible `doi: https://doi.org/<DOI>` text (targets with `"no_doi": true` are exempt while their traveling-library record carries no DOI), any duplicated DOI resolver prefix, or a leftover `doi:` label followed by nothing or by a link other than `https://doi.org/10.`.
+5. Any cited DOI missing from the bibliography's visible `doi: https://doi.org/<DOI>` text (targets with `"no_doi": true` are exempt while their traveling-library record carries no DOI), any duplicated DOI resolver prefix, or a leftover `doi:` label followed by nothing, by punctuation or by a link other than `https://doi.org/10.`.
 6. A manifest `rec_number` that does not appear as `<rec-number>N</rec-number>` in some EN.CITE traveling library XML together with that target's author surname. When the payload moved into a nested `ADDIN EN.CITE.DATA` field, it is in no field code: match against the decoded field data (`w:fldData`).
 7. An `author-year` citation whose native field result does not visibly contain its author surname.
 8. `Error!`, `Reference source not found`, `{Citation}`, or `{Bibliography}` placeholder strings in the document text.

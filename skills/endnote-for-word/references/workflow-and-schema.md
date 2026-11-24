@@ -400,8 +400,8 @@ Always run `validate` afterwards. It applies ten gates, and any failure sets
    DOI resolver prefix occurs. A target marked `no_doi` is skipped only while its record in
    the traveling library XML carries no `<electronic-resource-num>` text and no DOI in its
    `<url>` or `<notes>`; otherwise gate 6 fails it. A leftover `doi:` label, one that starts a
-   word and is followed by nothing but punctuation up to the end of the entry or by a link
-   other than `https://doi.org/10.`, fails the gate: EndNote printed the style's
+   word and is followed by the end of the entry, by punctuation (`. [Online]`, `(accessed`)
+   or by a link other than `https://doi.org/10.`, fails the gate: EndNote printed the style's
    space-separated label for an empty DOI field. A `doi:` inside a DOI, a URN or a title does
    not.
 6. Every manifest `rec_number` appears in some EN.CITE traveling library XML as

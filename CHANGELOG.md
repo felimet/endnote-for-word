@@ -21,7 +21,8 @@ All notable changes to this project are documented in this file. The format foll
   record's traveling-library XML in the document carries no DOI (`<electronic-resource-num>`,
   `<url>`, `<notes>`), so a manifest edit cannot switch the gate off for a record that has one.
 - Validation fails a bibliography with a leftover `doi:` label: one that starts a word and is
-  followed by nothing but punctuation up to the end of the entry, or by a link other than
+  followed by the end of the entry, by punctuation such as the template's next
+  `. [Online]. Available:` or `(accessed`, or by a link other than
   `https://doi.org/10.`. A `doi:` inside a DOI (`10.1000/abc-doi:5`), a URN or a title passes.
   Under EndNote's documented template rules, text attached to an empty
   field drops out but text set off by a space always prints, so a style whose `doi:` label is

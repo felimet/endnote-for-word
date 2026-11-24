@@ -214,10 +214,11 @@ $script:DuplicateDoiResolverPattern = '(?i)https://doi\.org/(?:https?://(?:dx\.)
 # for Working with Style Templates) drop text attached to an empty field but always print text
 # set off by a space, so 'doi: https://doi.org/DOI' leaves 'doi:' behind for a record without a
 # DOI unless the label is tied to the field with Link Adjacent Text. Not measured on EndNote 21.
-# Only such leftovers match: a label starting a token, followed by nothing but punctuation up to
-# the end of the entry, or by a link other than https://doi.org/10. A 'doi:' inside a token
-# (10.1000/abc-doi:5, urn:doi:) or before ordinary words (a title) is left alone.
-$script:DanglingDoiResolverPattern = '(?i)(?<![^\s(\[])doi:(?=[^\r\n\w]*(?:[\r\n]|$)|\s*(?!https://doi\.org/10\.)https?://)'
+# Only such leftovers match: a label starting a token, followed by the end of the entry, by
+# punctuation (the template's next text: '. [Online]. Available:', '(accessed ...)'), or by a link
+# other than https://doi.org/10. A 'doi:' inside a token (10.1000/abc-doi:5, urn:doi:) or before
+# ordinary words (a title) is left alone.
+$script:DanglingDoiResolverPattern = '(?i)(?<![^\s(\[])doi:(?=[^\S\r\n]*(?:[^\w\s]|[\r\n]|$)|\s*(?!https://doi\.org/10\.)https?://)'
 # The first non-empty text of a traveling-library record's DOI field, inside any style wrapper.
 # Measured on EndNote 21 output: a record with a DOI carries <electronic-resource-num>10....</...>,
 # a web page without one carries no such element.

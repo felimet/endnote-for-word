@@ -484,6 +484,16 @@ class BridgeFunctionTests(unittest.TestCase):
                                     "[2] M. Chen, Web page, 2024, doi: .",
                 "orphanLabelMidList": "[1] M. Chen, Web page, 2024, doi:\r"
                                       "[2] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.",
+                # The leftover label is followed by whatever the template prints next.
+                "orphanBeforeOnline": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                                      "[2] M. Chen, Web page, 2024, doi: . [Online]. Available: https://example.org/page",
+                "orphanUpperBeforeOnline": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                                           "[2] M. Chen, Web page, 2024, DOI: [Online]. Available: https://example.org/page",
+                "orphanBeforeAccessed": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                                        "[2] M. Chen, Web page, 2024, doi: (accessed Nov. 1, 2026).",
+                # An unnumbered style: the next entry starts with a letter.
+                "orphanBeforeAuthorEntry": "Chen, M. (2024). Web page. doi:\r"
+                                           "Wang, H. (2022). Journal. doi: https://doi.org/10.0000/fixture.0103.",
                 # 'doi:' inside a token or before ordinary words is no leftover label.
                 "doiInsideTokens": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
                                    "[2] M. Chen, Why doi: names persist, Web page, urn:doi:10.1000/abc, 2024.",
@@ -553,6 +563,10 @@ class BridgeFunctionTests(unittest.TestCase):
             "orphanLabel": [dangling.format("doi: https://example.org/page (accessed ")],
             "orphanLabelAtEnd": [dangling.format("doi: .")],
             "orphanLabelMidList": [dangling.format("doi:\r[2] H. Wang, Journal, doi: https://")],
+            "orphanBeforeOnline": [dangling.format("doi: . [Online]. Available: https://exam")],
+            "orphanUpperBeforeOnline": [dangling.format("DOI: [Online]. Available: https://exampl")],
+            "orphanBeforeAccessed": [dangling.format("doi: (accessed Nov. 1, 2026).")],
+            "orphanBeforeAuthorEntry": [dangling.format("doi:\rWang, H. (2022). Journal. doi: http")],
             "doiInsideTokens": [],
             "doiSuffix": [],
             "noDoiRecordClean": [],
