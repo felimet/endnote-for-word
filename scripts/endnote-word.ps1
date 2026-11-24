@@ -169,6 +169,8 @@ $script:EndNoteMostRecentLibraryValueName = 'File1'
 # library opened at start-up it kept naming that one while the requested library was open.
 $script:LibraryDatabaseRelativePath = 'sdb\sdb.eni'
 $script:RestartManagerTypeName = 'EndNoteForWordAgent.RestartManager'
+# Class prefix of an EndNote library window (measured; LIBRARY_WINDOW_CLASS_PREFIX in endnote_session.py).
+$script:LibraryWindowClassPrefix = 'Afx:'
 $script:EndNoteAppPathsKeys = @(
     'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\EndNote.exe',
     'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\EndNote.exe'
@@ -208,9 +210,15 @@ $script:RecordNumberElementFormat = '<rec-number>{0}</rec-number>'
 $script:DoiPattern = '^10\.\d{4,9}/[!-~]+$'
 $script:DoiResolverPrefix = 'https://doi.org/'
 $script:DuplicateDoiResolverPattern = '(?i)https://doi\.org/(?:https?://(?:dx\.)?doi\.org/|doi:\s*)'
-# The style's DOI literal with no DOI after it: a template without Link Adjacent Text printed it
-# for a record whose DOI field is empty, which only a no_doi target can reach.
-$script:DanglingDoiResolverPattern = '(?i)\bdoi: https://doi\.org/(?!10\.)'
+# A 'doi:' label not followed by a DOI link. EndNote's template rules (docs.endnote.com, Rules
+# for Working with Style Templates) drop text attached to an empty field but always print text
+# set off by a space, so 'doi: https://doi.org/DOI' leaves 'doi:' behind for a record without a
+# DOI unless the label is tied to the field with Link Adjacent Text. Not measured on EndNote 21.
+$script:DanglingDoiResolverPattern = '(?i)\bdoi:(?!\s*https://doi\.org/10\.)'
+# The first non-empty text of a traveling-library record's DOI field, inside any style wrapper.
+# Measured on EndNote 21 output: a record with a DOI carries <electronic-resource-num>10....</...>,
+# a web page without one carries no such element.
+$script:TravelingRecordDoiPattern = '(?i)<electronic-resource-num>(?:<[^/>][^>]*>|\s)*([^<\s][^<]*)'
 
 # Manifest schema v1.
 $script:ManifestSchemaVersion = 1
@@ -1378,6 +1386,7 @@ function Resolve-EndNoteImportLibrary {
 # compiles Add-Type with the .NET Framework compiler.
 $script:RestartManagerSource = @'
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -1457,22 +1466,77 @@ namespace EndNoteForWordAgent
             }
         }
     }
+
+    // Lists top-level windows read-only (EnumWindows); nothing is sent to them.
+    public static class TopLevelWindows
+    {
+        private delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr window, StringBuilder name, int capacity);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetWindowText(IntPtr window, StringBuilder text, int capacity);
+
+        // Titles of the windows, visible or hidden, of processIds whose class starts with classPrefix.
+        public static string[] GetTitles(int[] processIds, string classPrefix)
+        {
+            List<string> titles = new List<string>();
+            EnumWindows(delegate(IntPtr window, IntPtr parameter)
+            {
+                uint owner;
+                GetWindowThreadProcessId(window, out owner);
+                if (Array.IndexOf(processIds, (int)owner) < 0) { return true; }
+                StringBuilder name = new StringBuilder(256);
+                GetClassName(window, name, name.Capacity);
+                if (!name.ToString().StartsWith(classPrefix, StringComparison.Ordinal)) { return true; }
+                StringBuilder text = new StringBuilder(1024);
+                GetWindowText(window, text, text.Capacity);
+                titles.Add(text.ToString());
+                return true;
+            }, IntPtr.Zero);
+            return titles.ToArray();
+        }
+    }
 }
 '@
+
+function Test-NativeHelpers {
+    # $true once the Restart Manager and window-list interop is compiled; $false when Add-Type
+    # cannot compile it, and the import gate then falls back to EndNote's recent-library value.
+    if ($script:RestartManagerTypeName -as [type]) { return $true }
+    if ($script:RestartManagerUnavailable) { return $false }
+    try {
+        Add-Type -TypeDefinition $script:RestartManagerSource -ErrorAction Stop
+        return $true
+    }
+    catch {
+        $script:RestartManagerUnavailable = $true
+        Write-Log -Level WARN -Message "Could not load the Restart Manager interop, so only EndNote's recent-library value can confirm an import target: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Get-EndNoteLibraryWindowTitles {
+    # Titles of every EndNote library window, in front or behind, or $null without the interop.
+    # Every open library has its own window (measured, see endnote_session.py).
+    if (-not (Test-NativeHelpers)) { return $null }
+    $processIds = New-Object System.Collections.Generic.List[int]
+    foreach ($process in @(Get-Process -Name $script:EndNoteProcessName -ErrorAction SilentlyContinue)) { $processIds.Add([int]$process.Id) }
+    return , ([EndNoteForWordAgent.TopLevelWindows]::GetTitles($processIds.ToArray(), $script:LibraryWindowClassPrefix))
+}
 
 function Get-FileHolderProcessIds {
     # Returns the PIDs holding Path open, or $null when Restart Manager cannot answer; the caller
     # then has one signal fewer and never treats the gap as a confirmation.
     param([Parameter(Mandatory)][string]$Path)
-    if (-not ($script:RestartManagerTypeName -as [type])) {
-        if ($script:RestartManagerUnavailable) { return $null }
-        try { Add-Type -TypeDefinition $script:RestartManagerSource -ErrorAction Stop }
-        catch {
-            $script:RestartManagerUnavailable = $true
-            Write-Log -Level WARN -Message "Could not load the Restart Manager interop, so only EndNote's recent-library value can confirm an import target: $($_.Exception.Message)"
-            return $null
-        }
-    }
+    if (-not (Test-NativeHelpers)) { return $null }
     try { return , ([EndNoteForWordAgent.RestartManager]::GetHolderProcessIds([string[]]@($Path))) }
     catch {
         $message = $_.Exception.Message
@@ -1500,23 +1564,36 @@ function Resolve-ImportTargetConfirmation {
     # tests can drive it. A main-window title names only the file, never its folder, so a library
     # with the same file name elsewhere would also match; the title is therefore accepted only
     # together with a signal that names the full path, checked for the same EndNote process:
-    #   open_handle    - that process holds <library>.Data\sdb\sdb.eni open (HolderProcessIds).
-    #   recent_library - EndNote's most recent library, Recent Libraries\File1, is LibraryFile.
+    #   open_handle    - that process holds <library>.Data\sdb\sdb.eni open (HolderProcessIds), and
+    #                    no other open library window carries the same file name
+    #                    (LibraryWindowTitles), so the library in front is the held one.
+    #   recent_library - only when Restart Manager could not answer (HolderProcessIds is $null):
+    #                    EndNote's most recent library, Recent Libraries\File1, is LibraryFile.
     # Direct Export imports into the library in front, which is why the title must match too.
     param(
         [Parameter(Mandatory)][string]$LibraryFile,
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Windows,
         [AllowNull()][AllowEmptyString()][string]$RecentLibrary,
-        [AllowNull()][int[]]$HolderProcessIds
+        [AllowNull()][int[]]$HolderProcessIds,
+        [AllowNull()][AllowEmptyCollection()][string[]]$LibraryWindowTitles
     )
     $fileName = [IO.Path]::GetFileName($LibraryFile)
+    # EndNote titles the window '<product> - <file>', and just '<file>' after a CWYW job.
+    $showsFile = { param([string]$Title) $Title -ieq $fileName -or $Title.EndsWith(' - ' + $fileName, [StringComparison]::OrdinalIgnoreCase) }
+    $sameName = 0
+    foreach ($libraryTitle in @($LibraryWindowTitles)) {
+        if ($null -ne $libraryTitle -and (& $showsFile $libraryTitle)) { $sameName++ }
+    }
     foreach ($window in $Windows) {
         $title = [string]$window.title
-        # EndNote titles the window '<product> - <file>', and just '<file>' after a CWYW job.
-        if (-not ($title -ieq $fileName -or $title.EndsWith(' - ' + $fileName, [StringComparison]::OrdinalIgnoreCase))) { continue }
+        if (-not (& $showsFile $title)) { continue }
         $signal = $null
-        if ($null -ne $HolderProcessIds -and $HolderProcessIds -contains [int]$window.process_id) {
-            $signal = 'open_handle'
+        if ($null -ne $HolderProcessIds) {
+            # Exactly one library window, the one in front, may show this file name; with two, the
+            # one in front may be a same-name library from another folder.
+            if ($HolderProcessIds -contains [int]$window.process_id -and $sameName -eq 1) {
+                $signal = 'open_handle'
+            }
         }
         elseif (-not [string]::IsNullOrWhiteSpace($RecentLibrary) -and
             [string]::Equals($RecentLibrary, $LibraryFile, [StringComparison]::OrdinalIgnoreCase)) {
@@ -1540,7 +1617,8 @@ function Get-ImportTargetConfirmation {
         [Parameter(Mandatory)][string]$DatabaseFile
     )
     return Resolve-ImportTargetConfirmation -LibraryFile $LibraryFile -Windows (Get-EndNoteMainWindows) `
-        -RecentLibrary (Get-EndNoteMostRecentLibraryPath) -HolderProcessIds (Get-FileHolderProcessIds -Path $DatabaseFile)
+        -RecentLibrary (Get-EndNoteMostRecentLibraryPath) -HolderProcessIds (Get-FileHolderProcessIds -Path $DatabaseFile) `
+        -LibraryWindowTitles (Get-EndNoteLibraryWindowTitles)
 }
 
 function Open-EndNoteLibraryForImport {
@@ -1574,7 +1652,10 @@ function Open-EndNoteLibraryForImport {
     $holders = Get-FileHolderProcessIds -Path $database
     $holderText = 'unknown'
     if ($null -ne $holders) { $holderText = '[' + ($holders -join ', ') + ']' }
-    throw "EndNote did not confirm the exact requested import target '$fullLibrary' within $($script:EndNoteReadyTimeoutMilliseconds) ms. EndNote main windows: $titles; processes holding ${database}: $holderText; most recent library: '$(Get-EndNoteMostRecentLibraryPath)'. Answer any EndNote dialog, bring the library to the front, and retry."
+    $libraryTitles = Get-EndNoteLibraryWindowTitles
+    $libraryText = 'unknown'
+    if ($null -ne $libraryTitles) { $libraryText = '[' + ((@($libraryTitles) | ForEach-Object { "'" + $_ + "'" }) -join ', ') + ']' }
+    throw "EndNote did not confirm the exact requested import target '$fullLibrary' within $($script:EndNoteReadyTimeoutMilliseconds) ms. EndNote main windows: $titles; library windows: $libraryText; processes holding ${database}: $holderText; most recent library: '$(Get-EndNoteMostRecentLibraryPath)'. Answer any EndNote dialog, close any other open library with the same file name, bring the library to the front, and retry."
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -2209,13 +2290,17 @@ function Add-BibliographyValidationProblems {
     if ($bibliographyText -match $script:DuplicateDoiResolverPattern) {
         $Errors.Add('The bibliography contains a duplicated DOI resolver prefix.')
     }
-    elseif ($bibliographyText -match $script:DanglingDoiResolverPattern) {
-        $Errors.Add("The bibliography prints 'doi: https://doi.org/' without a DOI after it. Wrap the output style's DOI phrase in Link Adjacent Text so it disappears for a record without a DOI.")
+    else {
+        $dangling = [regex]::Match($bibliographyText, $script:DanglingDoiResolverPattern)
+        if ($dangling.Success) {
+            $context = $bibliographyText.Substring($dangling.Index, [Math]::Min(40, $bibliographyText.Length - $dangling.Index))
+            $Errors.Add("The bibliography prints a 'doi:' label without 'https://doi.org/<DOI>' after it: '$context'. Tie the output style's 'doi:' label to the DOI field with Link Adjacent Text so it disappears for a record without a DOI.")
+        }
     }
     $checkedDois = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
     foreach ($citation in @(Get-OptionalProperty -Object $Manifest -Name 'citations')) {
         foreach ($target in @(Get-OptionalProperty -Object $citation -Name 'targets')) {
-            # The precheck proved this record has no DOI, so the style prints none.
+            # A no_doi target prints no DOI; the traveling-library gate checks that its record has none.
             if (Test-NoDoiTarget -Target $target) { continue }
             $doi = [string](Get-OptionalProperty -Object $target -Name 'doi')
             if (-not $checkedDois.Add($doi)) { continue }
@@ -2240,17 +2325,28 @@ function Add-TravelingLibraryValidationProblems {
             $author = ([string](Get-OptionalProperty -Object $target -Name 'author')).Trim()
             $element = [string]::Format($script:RecordNumberElementFormat, $recNumber)
             $recordSeen = $false
-            $matched = $false
+            $matched = $null
             foreach ($payload in $Payloads) {
                 if ($payload.IndexOf($element, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
                 $recordSeen = $true
-                if ($payload.IndexOf($author, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true; break }
+                if ($payload.IndexOf($author, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $payload; break }
             }
             if (-not $recordSeen) {
                 $Errors.Add("Citation '$citationId': rec-number $recNumber is absent from every traveling library payload.")
             }
-            elseif (-not $matched) {
+            elseif ($null -eq $matched) {
                 $Errors.Add("Citation '$citationId': rec-number $recNumber was found, but the author surname '$author' does not appear in the same traveling library payload.")
+            }
+            elseif (Test-NoDoiTarget -Target $target) {
+                # validate never runs the precheck, so the cited record itself must show that it
+                # has no DOI before the visible DOI gate is skipped for it.
+                $start = $matched.IndexOf($element, [StringComparison]::OrdinalIgnoreCase)
+                $end = $matched.IndexOf('</record>', $start, [StringComparison]::OrdinalIgnoreCase)
+                if ($end -lt 0) { $end = $matched.Length }
+                $recordDoi = [regex]::Match($matched.Substring($start, $end - $start), $script:TravelingRecordDoiPattern)
+                if ($recordDoi.Success) {
+                    $Errors.Add("Citation '$citationId': rec-number $recNumber is marked no_doi, but its traveling library record carries the DOI '$($recordDoi.Groups[1].Value.Trim())'. Remove no_doi, cite that DOI and make the style print it.")
+                }
             }
         }
     }

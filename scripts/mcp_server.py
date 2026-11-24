@@ -406,7 +406,8 @@ TOOLS: list[dict[str, Any]] = [
             "Open a DOCX read-only and verify the citation gates: no leftover {{CITE:}} markers or "
             "temporary citation text, the expected number of ADDIN EN.CITE fields, a non-empty "
             "ADDIN EN.REFLIST bibliography with the visible canonical DOI link of every target that "
-            "has one (no_doi targets are exempt), no doubled DOI "
+            "has one (no_doi targets are exempt while their traveling-library record carries no DOI), "
+            "no dangling 'doi:' label, no doubled DOI "
             "resolver, every requested Author (Year) display, every manifest rec_number present "
             "in the traveling library XML, and the EN.Layout and EN.Libraries document variables. Supply "
             "manifest_path to enable the manifest-dependent gates."
@@ -563,8 +564,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "import_reference_file",
         "description": (
             "Import a RIS file into the exact EndNote library supplied by library_path through "
-            "EndNote's native Direct Export route, once EndNote is proven to hold that exact library "
-            "open in front, then report the before/after live-reference "
+            "EndNote's native Direct Export route, once EndNote shows a library of that file name in "
+            "front, no other open library has that file name, and EndNote holds that exact library's "
+            "database open, then report the before/after live-reference "
             "counts. When the user names no library, omit library_path and pass document_path: "
             "the target is <document stem>.enl beside the DOCX, and it is refused when it does "
             "not exist yet but the DOCX already carries EndNote fields. A missing target is "

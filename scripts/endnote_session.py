@@ -19,10 +19,11 @@ process, so every job shares it. The behaviour below was measured on EndNote 21.
   lets CWYW give up the citation, Word close normally and EndNote exit.
 
 Nothing here terminates a process. Windows are closed with WM_CLOSE, the same request a click on
-the close button sends. The only buttons ever pressed are Cancel, on a news notice or on the
-record chooser, and the safe button of a listed marketing notice: Ignore This, else Cancel, else
-Close, never Learn More... or any purchase or sign-in button. The only Word state touched is the
-recovery entry of a document that a job's hidden Word had open when the server had to end it.
+the close button sends. The only buttons ever pressed are Cancel, on a news notice, on a listed
+marketing notice or on the record chooser, and Close on a listed marketing notice without Cancel;
+never Ignore This, which stops a notice for good, Learn More... or any purchase or sign-in button.
+The only Word state touched is the recovery entry of a document that a job's hidden Word had open
+when the server had to end it.
 """
 
 from __future__ import annotations
@@ -49,8 +50,9 @@ NOTICE_BUTTONS = frozenset({"Learn More...", CANCEL_TEXT, "Ignore This"})
 # Marketing and upgrade notices, matched case-insensitively on the whole title. Keep this list
 # small and explicit: a dialog that matches none of it is reported under attention, never clicked.
 MARKETING_NOTICE_TITLES = ("holiday sale*", "*upgrade to the new endnote*")
-# Pressed in this order of preference; Learn More... opens the vendor's sales page.
-MARKETING_NOTICE_BUTTONS = ("Ignore This", CANCEL_TEXT, "Close")
+# Pressed in this order of preference. Both close the notice for this run only; Ignore This would
+# change EndNote's preferences and Learn More... opens the vendor's sales page.
+MARKETING_NOTICE_BUTTONS = (CANCEL_TEXT, "Close")
 CANCEL_CONTROL_ID = 2
 WM_CLOSE = 0x0010
 BM_CLICK = 0x00F5

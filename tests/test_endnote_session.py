@@ -43,7 +43,9 @@ class EndNoteSessionTests(unittest.TestCase):
     def test_only_listed_marketing_notices_get_a_safe_button(self) -> None:
         pick = self.session.marketing_notice_button
         measured = "Holiday Sale: Save 25% when you upgrade to the new EndNote!"
-        self.assertEqual(pick(measured, {"Learn More...", "Cancel", "Ignore This"}), "Ignore This")
+        # Cancel, never Ignore This: that one changes EndNote's preferences for good.
+        self.assertEqual(pick(measured, {"Learn More...", "Cancel", "Ignore This"}), "Cancel")
+        self.assertIsNone(pick(measured, {"Learn More...", "Ignore This"}))
         self.assertEqual(pick("Spring offer: upgrade to the new EndNote today", {"Learn More...", "Cancel"}), "Cancel")
         self.assertEqual(pick("HOLIDAY SALE", {"Learn More...", "Close"}), "Close")
         # The sales link is never pressed, even when it is the only way out.
@@ -81,7 +83,7 @@ class EndNoteSessionTests(unittest.TestCase):
             self.session.dismiss_notices({7}),
             ["Holiday Sale: Save 25% when you upgrade to the new EndNote!", "EndNote 2025 is here!"],
         )
-        self.assertEqual(clicked, [13, 22])
+        self.assertEqual(clicked, [12, 22])
         self.assertEqual(
             [dialog["title"] for dialog in self.session.blocking_dialogs({7})],
             ["EndNote 21 Select Matching Reference"],

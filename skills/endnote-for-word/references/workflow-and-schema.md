@@ -396,9 +396,10 @@ Always run `validate` afterwards. It applies ten gates, and any failure sets
 4. When `bibliography.expected` is true, exactly one `ADDIN EN.REFLIST` field exists and
    its `Result.Text` is non empty after trimming.
 5. Every cited DOI is visibly present as `doi: https://doi.org/<DOI>`, and no duplicated
-   DOI resolver prefix occurs. Targets marked `no_doi` have no DOI to show and are skipped,
-   but a `doi: https://doi.org/` literal with no DOI after it fails the gate: the style
-   printed its DOI phrase for an empty field.
+   DOI resolver prefix occurs. A target marked `no_doi` is skipped only while its record in
+   the traveling library XML carries no `<electronic-resource-num>` text; otherwise gate 6
+   fails it. A `doi:` label not followed by `https://doi.org/10.` fails the gate: EndNote
+   printed the style's space-separated label for an empty DOI field.
 6. Every manifest `rec_number` appears in some EN.CITE traveling library XML as
    `<rec-number>N</rec-number>`, and its `author` surname appears in the same field's XML.
    A record whose payload was moved into a nested `ADDIN EN.CITE.DATA` field is matched

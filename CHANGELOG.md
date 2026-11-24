@@ -17,9 +17,14 @@ All notable changes to this project are documented in this file. The format foll
   `library_has_doi` when the record does have a DOI, and rejects `no_doi` together with `doi`
   or as a non-boolean. Render takes these targets in the same pass as DOI targets, so the
   author-year display mapping by field order stays aligned, and reports `no_doi_targets`.
-  Validation keeps every gate and skips only the visible DOI link of a `no_doi` target.
-- Validation fails a bibliography that prints `doi: https://doi.org/` with no DOI after it,
-  which an output style without Link Adjacent Text does for a `no_doi` record.
+  Validation keeps every gate and skips the visible DOI link of a `no_doi` target only when the
+  record's traveling-library XML in the document carries no DOI (`<electronic-resource-num>`),
+  so a manifest edit cannot switch the gate off for a record that has one.
+- Validation fails a bibliography in which a `doi:` label is not followed by
+  `https://doi.org/10.`. Under EndNote's documented template rules, text attached to an empty
+  field drops out but text set off by a space always prints, so a style whose `doi:` label is
+  not tied to the DOI field with Link Adjacent Text leaves a bare `doi:` for a `no_doi` record.
+  That output has not been measured on EndNote 21.
 
 ### Fixed
 
@@ -28,16 +33,18 @@ All notable changes to this project are documented in this file. The format foll
   `Recent Libraries\File1` value to name the target, but EndNote keeps that value on the library
   it opened at start-up, and it required a `<product> - <file>` title although EndNote drops the
   product prefix after a CWYW job. The target is now confirmed when an EndNote main window shows
-  the file name and the same process holds `<library>.Data\sdb\sdb.eni` open, as Windows
-  Restart Manager reports (`import_target_confirmed_by: open_handle`), or, as before, when
-  `File1` names the exact path (`recent_library`). Neither the registry nor a library file is
-  written, and a timeout now names the windows, the holding processes and the recent library it
-  saw.
+  the file name, the same process holds `<library>.Data\sdb\sdb.eni` open, as Windows
+  Restart Manager reports, and no other open library window carries the same file name
+  (`import_target_confirmed_by: open_handle`). Only when Restart Manager cannot answer does
+  `File1` naming the exact path still confirm it (`recent_library`). Neither the registry nor a
+  library file is written, and a timeout now names the windows, the open library windows, the
+  holding processes and the recent library it saw.
 - EndNote's start-up marketing notice `Holiday Sale: Save 25% when you upgrade to the new
   EndNote!` no longer blocks a job until it times out. A short allowlist of marketing titles
-  (`Holiday Sale*`, `*upgrade to the new EndNote*`) is answered with Ignore This, else Cancel,
-  else Close, and listed under `notices_dismissed`; Learn More... and any purchase or sign-in
-  button are never pressed, and every other dialog is still reported under `attention`.
+  (`Holiday Sale*`, `*upgrade to the new EndNote*`) is answered with Cancel, else Close, which
+  changes no preference, and listed under `notices_dismissed`; Ignore This, Learn More... and
+  any purchase or sign-in button are never pressed, and every other dialog is still reported
+  under `attention`.
 - The `.sha256` files that `scripts/package_plugin.py` writes now end in LF on Windows too, so
   `sha256sum -c` on Linux or macOS accepts them. The CR in the old CRLF ending was read as part
   of the file name, and the check failed although the digest was right.

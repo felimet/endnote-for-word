@@ -167,6 +167,12 @@ foreach ($bibliography in $spec.bibliographies.PSObject.Properties) {
     Add-BibliographyValidationProblems -Fields $fields -Manifest $spec.manifest -Errors $errors -Warnings $warnings
     $result[$bibliography.Name] = @($errors)
 }
+foreach ($payloads in $spec.payloads.PSObject.Properties) {
+    $errors = New-Object System.Collections.Generic.List[string]
+    $warnings = New-Object System.Collections.Generic.List[string]
+    Add-TravelingLibraryValidationProblems -Payloads @($payloads.Value) -Manifest $spec.manifest -Errors $errors -Warnings $warnings
+    $result[$payloads.Name] = @($errors)
+}
 $result | ConvertTo-Json -Compress -Depth 5
 """
 
@@ -174,8 +180,10 @@ IMPORT_CONFIRMATION_BODY = r"""
 foreach ($case in $spec.cases.PSObject.Properties) {
     $holders = $null
     if ($null -ne $case.Value.holders) { $holders = [int[]]@($case.Value.holders) }
+    $titles = $null
+    if ($null -ne $case.Value.titles) { $titles = [string[]]@($case.Value.titles) }
     $confirmation = Resolve-ImportTargetConfirmation -LibraryFile $spec.library -Windows @($case.Value.windows) `
-        -RecentLibrary $case.Value.recent -HolderProcessIds $holders
+        -RecentLibrary $case.Value.recent -HolderProcessIds $holders -LibraryWindowTitles $titles
     if ($null -eq $confirmation) { $result[$case.Name] = $null }
     else { $result[$case.Name] = '{0}:{1}' -f $confirmation.confirmed_by, $confirmation.process_id }
 }
@@ -187,6 +195,14 @@ foreach ($path in @($spec.held, $spec.free)) {
     $ids = Get-FileHolderProcessIds -Path $path
     $result[[IO.Path]::GetFileName($path)] = $ids
 }
+# A hidden window of this process, so the window list is checked without EndNote.
+Add-Type -AssemblyName System.Windows.Forms
+$form = New-Object System.Windows.Forms.Form
+$form.Text = 'EndNote 21 - Probe Library.enl'
+$null = $form.Handle
+$result['own_windows'] = @([EndNoteForWordAgent.TopLevelWindows]::GetTitles([int[]]@($PID), 'WindowsForms'))
+$result['other_class'] = @([EndNoteForWordAgent.TopLevelWindows]::GetTitles([int[]]@($PID), 'Afx:'))
+$form.Dispose()
 $result | ConvertTo-Json -Compress
 """
 
@@ -411,9 +427,10 @@ class BridgeFunctionTests(unittest.TestCase):
         spec = {
             "functions": ["Get-OptionalProperty", "Assert-AllowedKeys", "ConvertTo-ManifestInteger",
                           "Assert-CitationText", "Test-NoDoiTarget", "Assert-ManifestTarget",
-                          "Add-BibliographyValidationProblems"],
+                          "Add-BibliographyValidationProblems", "Add-TravelingLibraryValidationProblems"],
             "variables": ["AllowedTargetKeys", "NoDoiTargetKey", "DoiPattern", "ForbiddenCitationTextPattern",
-                          "DoiResolverPrefix", "DuplicateDoiResolverPattern", "DanglingDoiResolverPattern"],
+                          "DoiResolverPrefix", "DuplicateDoiResolverPattern", "DanglingDoiResolverPattern",
+                          "RecordNumberElementFormat", "TravelingRecordDoiPattern"],
             "targets": {
                 "withDoi": doi_target,
                 "noDoi": no_doi_target,
@@ -431,9 +448,36 @@ class BridgeFunctionTests(unittest.TestCase):
                 "hidden": "[1] H. Wang, Journal, 2022.\r[2] M. Chen, Web page, 2024.",
                 "dangling": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
                             "[2] M. Chen, Web page, 2024, doi: https://doi.org/.",
+                # EndNote's template rules drop 'https://doi.org/' with the empty DOI field but keep
+                # the space-separated 'doi:' label.
+                "orphanLabel": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                               "[2] M. Chen, Web page. doi: https://example.org/page (accessed Nov. 1, 2026).",
+                "orphanLabelAtEnd": "[1] H. Wang, Journal, doi: https://doi.org/10.0000/fixture.0103.\r"
+                                    "[2] M. Chen, Web page, 2024, doi: .",
+            },
+            "payloads": {
+                # Shapes measured in an EndNote 21 document: a DOI record carries
+                # <electronic-resource-num>, a web page without a DOI carries none.
+                "noDoiRecordClean": [
+                    "<EndNote><Cite><Author>Wang</Author><record><rec-number>3</rec-number><contributors><author>Wang, H.</author>"
+                    "</contributors><electronic-resource-num>10.0000/fixture.0103</electronic-resource-num></record></Cite>"
+                    "<Cite><Author>Chen</Author><record><rec-number>1</rec-number><ref-type name=\"Web Page\">12</ref-type>"
+                    "<contributors><author>Chen, M.</author></contributors><electronic-resource-num></electronic-resource-num>"
+                    "<language>eng</language></record></Cite></EndNote>",
+                ],
+                "noDoiRecordHasDoi": [
+                    "<EndNote><Cite><Author>Wang</Author><record><rec-number>3</rec-number><contributors><author>Wang, H.</author>"
+                    "</contributors><electronic-resource-num>10.0000/fixture.0103</electronic-resource-num></record></Cite></EndNote>",
+                    "<EndNote><Cite><Author>Chen</Author><record><rec-number>1</rec-number><contributors><author>Chen, M.</author>"
+                    "</contributors><electronic-resource-num><style face=\"normal\">10.0000/fixture.0101</style>"
+                    "</electronic-resource-num></record></Cite></EndNote>",
+                ],
             },
         }
         missing = "Citation '{0}' requires a DOI for every target, or \"no_doi\": true for a record that has none."
+        dangling = ("The bibliography prints a 'doi:' label without 'https://doi.org/<DOI>' after it: '{0}'. Tie the "
+                    "output style's 'doi:' label to the DOI field with Link Adjacent Text so it disappears for a "
+                    "record without a DOI.")
         expected = {
             "withDoi": "accepted",
             "noDoi": "accepted",
@@ -446,9 +490,13 @@ class BridgeFunctionTests(unittest.TestCase):
                 "The bibliography does not visibly contain 'doi: https://doi.org/10.0000/fixture.0103'. "
                 "Check the output style Bibliography Templates."
             ],
-            "dangling": [
-                "The bibliography prints 'doi: https://doi.org/' without a DOI after it. Wrap the output "
-                "style's DOI phrase in Link Adjacent Text so it disappears for a record without a DOI."
+            "dangling": [dangling.format("doi: https://doi.org/.")],
+            "orphanLabel": [dangling.format("doi: https://example.org/page (accessed ")],
+            "orphanLabelAtEnd": [dangling.format("doi: .")],
+            "noDoiRecordClean": [],
+            "noDoiRecordHasDoi": [
+                "Citation 'b': rec-number 1 is marked no_doi, but its traveling library record carries the DOI "
+                "'10.0000/fixture.0101'. Remove no_doi, cite that DOI and make the style print it."
             ],
         }
         for host, result in self.run_functions("manifest-target", MANIFEST_TARGET_BODY, spec).items():
@@ -458,19 +506,35 @@ class BridgeFunctionTests(unittest.TestCase):
     def test_import_target_needs_its_title_and_a_full_path_signal_from_the_same_process(self) -> None:
         library = r"E:\Projects\Grading\Lib [2024].enl"
         front = [{"process_id": 42, "title": "EndNote 21 - Lib [2024].enl"}]
+        other = r"E:\Other\My EndNote Library.enl"
+        # Library windows behind the front one: the start-up library and the target.
+        open_libraries = ["EndNote 21 - Lib [2024].enl", "EndNote 21 - My EndNote Library.enl"]
         spec = {
             "functions": ["Resolve-ImportTargetConfirmation"],
             "variables": [],
             "library": library,
             "cases": {
                 # Measured failure of 1.5.2: the window is up, File1 still names the start-up library.
-                "handleWhileRecentNamesAnother": {"windows": front, "recent": r"E:\Other\My EndNote Library.enl", "holders": [42]},
-                "titleWithoutProductPrefix": {"windows": [{"process_id": 42, "title": "lib [2024].ENL"}], "recent": None, "holders": [42]},
-                "recentLibraryWithoutRestartManager": {"windows": front, "recent": library.upper(), "holders": None},
-                "heldByAnotherProcessOnly": {"windows": front, "recent": r"E:\Other\My EndNote Library.enl", "holders": [7]},
-                "heldButAnotherLibraryInFront": {"windows": [{"process_id": 42, "title": "EndNote 21 - Other.enl"}], "recent": library, "holders": [42]},
-                "sameSuffixOtherName": {"windows": [{"process_id": 42, "title": "EndNote 21 - MyLib [2024].enl"}], "recent": library, "holders": [42]},
-                "noEndNoteWindow": {"windows": [], "recent": library, "holders": [42]},
+                "handleWhileRecentNamesAnother": {"windows": front, "recent": other, "holders": [42], "titles": open_libraries},
+                "titleWithoutProductPrefix": {"windows": [{"process_id": 42, "title": "lib [2024].ENL"}], "recent": None,
+                                              "holders": [42], "titles": ["lib [2024].ENL"]},
+                "recentLibraryWithoutRestartManager": {"windows": front, "recent": library.upper(), "holders": None, "titles": None},
+                "heldByAnotherProcessOnly": {"windows": front, "recent": other, "holders": [7], "titles": open_libraries},
+                "heldButAnotherLibraryInFront": {"windows": [{"process_id": 42, "title": "EndNote 21 - Other.enl"}], "recent": library,
+                                                 "holders": [42], "titles": open_libraries},
+                "sameSuffixOtherName": {"windows": [{"process_id": 42, "title": "EndNote 21 - MyLib [2024].enl"}], "recent": library,
+                                        "holders": [42], "titles": ["EndNote 21 - MyLib [2024].enl"]},
+                "noEndNoteWindow": {"windows": [], "recent": library, "holders": [42], "titles": []},
+                # A same-name library from another folder is open too: the one in front may be it.
+                "sameNameLibraryAlsoOpen": {"windows": front, "recent": other, "holders": [42],
+                                            "titles": ["EndNote 21 - Lib [2024].enl", "Lib [2024].enl"]},
+                # Restart Manager answered: the target is not held, so File1 must not confirm it.
+                "recentLibraryButNotHeld": {"windows": front, "recent": library, "holders": [], "titles": ["EndNote 21 - Lib [2024].enl"]},
+                "recentLibraryHeldElsewhere": {"windows": front, "recent": library, "holders": [7], "titles": ["EndNote 21 - Lib [2024].enl"]},
+                # No window list: the same-name check cannot run, so the handle does not confirm.
+                "handleWithoutWindowList": {"windows": front, "recent": other, "holders": [42], "titles": None},
+                # The front title is not among the library windows found: the list is not trusted.
+                "handleWithEmptyWindowList": {"windows": front, "recent": other, "holders": [42], "titles": []},
             },
         }
         expected = {
@@ -481,18 +545,23 @@ class BridgeFunctionTests(unittest.TestCase):
             "heldButAnotherLibraryInFront": None,
             "sameSuffixOtherName": None,
             "noEndNoteWindow": None,
+            "sameNameLibraryAlsoOpen": None,
+            "recentLibraryButNotHeld": None,
+            "recentLibraryHeldElsewhere": None,
+            "handleWithoutWindowList": None,
+            "handleWithEmptyWindowList": None,
         }
         for host, result in self.run_functions("import-confirmation", IMPORT_CONFIRMATION_BODY, spec).items():
             with self.subTest(host=host):
                 self.assertEqual(result, expected)
 
-    def test_restart_manager_names_the_process_holding_a_file(self) -> None:
+    def test_native_helpers_name_file_holders_and_list_windows_by_class(self) -> None:
         held = self.workspace / "held.txt"
         free = self.workspace / "free.txt"
         held.write_text("held", encoding="utf-8")
         free.write_text("free", encoding="utf-8")
         spec = {
-            "functions": ["Get-FileHolderProcessIds"],
+            "functions": ["Test-NativeHelpers", "Get-FileHolderProcessIds"],
             "variables": ["RestartManagerSource", "RestartManagerTypeName", "RestartManagerUnavailable", "RestartManagerWarning"],
             "held": str(held),
             "free": str(free),
@@ -503,6 +572,8 @@ class BridgeFunctionTests(unittest.TestCase):
             with self.subTest(host=host):
                 self.assertIn(os.getpid(), result["held.txt"])
                 self.assertEqual(result["free.txt"], [])
+                self.assertIn("EndNote 21 - Probe Library.enl", result["own_windows"])
+                self.assertEqual(result["other_class"], [])
 
 
 class DocumentLibraryTests(unittest.TestCase):

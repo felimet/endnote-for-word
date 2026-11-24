@@ -179,13 +179,15 @@ waits until EndNote confirms it. A window title names only the file, so it count
 with a signal that names the full path, for the same EndNote process:
 
 - `open_handle`: Windows Restart Manager (`RmGetList`) reports that the EndNote process holds
-  `<library>.Data\sdb\sdb.eni` open. Measured on EndNote 21: an open library's `.enl`,
-  `sdb.eni` and `pdb.eni` are held by EndNote, a closed library's by no process. The session
-  only asks; it never shuts down or restarts anything.
-- `recent_library`: EndNote's most recent library, `Recent Libraries\File1`, is the exact path.
-  It is still accepted, as before, which also covers a machine where Restart Manager cannot
-  answer. It is no longer required, because EndNote keeps it on the library it opened at
-  start-up while a forwarded library is open in front.
+  `<library>.Data\sdb\sdb.eni` open, and no other open EndNote library window carries the same
+  file name, so the library in front cannot be a same-name copy from another folder. Measured
+  on EndNote 21: an open library's `.enl`, `sdb.eni` and `pdb.eni` are held by EndNote, a closed
+  library's by no process, and every open library has its own window. The session only asks;
+  it never shuts down or restarts anything, and the window list is read with `EnumWindows`.
+- `recent_library`: only when Restart Manager cannot answer, EndNote's most recent library,
+  `Recent Libraries\File1`, is the exact path, which was the 1.5.2 rule. When Restart Manager
+  answers that the target is not held, `File1` confirms nothing; EndNote keeps it on the
+  library it opened at start-up while a forwarded library is open in front.
 
 The result reports the signal as `import_target_confirmed_by`. Neither the registry nor the
 library files are written. The bridge then passes the RIS file to `EndNote.exe`, and polls the
