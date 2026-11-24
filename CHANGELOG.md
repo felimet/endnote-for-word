@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-24
+
 ### Added
 
 - A manifest target may cite a record without a DOI, such as a web page (EndNote reference
@@ -204,6 +206,7 @@ All notable changes to this project are documented in this file. The format foll
 
 State of `main` when this changelog was started.
 
+[1.6.0]: https://github.com/felimet/endnote-for-word/releases/tag/v1.6.0
 [1.5.2]: https://github.com/felimet/endnote-for-word/releases/tag/v1.5.2
 [1.5.1]: https://github.com/felimet/endnote-for-word/releases/tag/v1.5.1
 [1.5.0]: https://github.com/felimet/endnote-for-word/releases/tag/v1.5.0

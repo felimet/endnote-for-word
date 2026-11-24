@@ -4,7 +4,7 @@ description: "Find DOI-verified research papers with the Agent's available schol
 license: MIT
 metadata:
   author: Jia-Ming Zhou (Felimet)
-  version: 1.5.2
+  version: 1.6.0
 ---
 
 # EndNote for Word
