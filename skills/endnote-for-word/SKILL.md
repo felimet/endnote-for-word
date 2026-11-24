@@ -76,7 +76,7 @@ Use the bundled local MCP server when available:
 - `validate_endnote_word_document`: read-only structural validation against the gates below.
 - `update_endnote_word_fields`: re-run CWYW formatting after the document text changed. Runs as a background job unless `background` is false.
 - `set_endnote_citation_style`: switch the output style of an already formatted document. Runs as a background job unless `background` is false.
-- `get_endnote_job_status`: a job's state, its tool result once finished, the EndNote news notices it dismissed with Cancel, and any dialog that stayed open. Without `job_id` it lists the session's jobs.
+- `get_endnote_job_status`: a job's state, its tool result once finished, the EndNote notices it dismissed under `notices_dismissed` (news notices with Cancel, listed marketing notices such as `Holiday Sale: ...` with Ignore This), and any other dialog that stayed open, under `attention`. Without `job_id` it lists the session's jobs.
 - `cancel_endnote_job`: stop a queued or running job; no output file is written.
 - `unformat_endnote_word_document`: revert formatted citations to temporary citation text, into a new file only.
 - `export_reference_import_file`: write a UTF-8 RIS file from structured reference metadata.

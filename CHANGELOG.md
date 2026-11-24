@@ -31,6 +31,11 @@ All notable changes to this project are documented in this file. The format foll
   `File1` names the exact path (`recent_library`). Neither the registry nor a library file is
   written, and a timeout now names the windows, the holding processes and the recent library it
   saw.
+- EndNote's start-up marketing notice `Holiday Sale: Save 25% when you upgrade to the new
+  EndNote!` no longer blocks a job until it times out. A short allowlist of marketing titles
+  (`Holiday Sale*`, `*upgrade to the new EndNote*`) is answered with Ignore This, else Cancel,
+  else Close, and listed under `notices_dismissed`; Learn More... and any purchase or sign-in
+  button are never pressed, and every other dialog is still reported under `attention`.
 - The `.sha256` files that `scripts/package_plugin.py` writes now end in LF on Windows too, so
   `sha256sum -c` on Linux or macOS accepts them. The CR in the old CRLF ending was read as part
   of the file name, and the check failed although the digest was right.

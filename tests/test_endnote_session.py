@@ -40,6 +40,53 @@ class EndNoteSessionTests(unittest.TestCase):
         self.assertFalse(self.session.is_notice("Microsoft Word", buttons))
         self.assertFalse(self.session.is_notice("EndNote 2025 is here!", {"OK"}))
 
+    def test_only_listed_marketing_notices_get_a_safe_button(self) -> None:
+        pick = self.session.marketing_notice_button
+        measured = "Holiday Sale: Save 25% when you upgrade to the new EndNote!"
+        self.assertEqual(pick(measured, {"Learn More...", "Cancel", "Ignore This"}), "Ignore This")
+        self.assertEqual(pick("Spring offer: upgrade to the new EndNote today", {"Learn More...", "Cancel"}), "Cancel")
+        self.assertEqual(pick("HOLIDAY SALE", {"Learn More...", "Close"}), "Close")
+        # The sales link is never pressed, even when it is the only way out.
+        self.assertIsNone(pick(measured, {"Learn More..."}))
+        self.assertIsNone(pick(measured, {"Buy Now", "Sign In"}))
+        # Unlisted dialogs stay with attention, whatever their buttons.
+        self.assertIsNone(pick("EndNote 21 Select Matching Reference", {"Cancel"}))
+        self.assertIsNone(pick("Sign in to EndNote", {"Sign In", "Cancel"}))
+        self.assertIsNone(pick("Microsoft Word", {"Learn More...", "Cancel", "Ignore This"}))
+
+    def test_marketing_notice_is_dismissed_and_other_dialogs_stay_reported(self) -> None:
+        window = self.session.Window
+        windows = [
+            window(1, 7, "#32770", "Holiday Sale: Save 25% when you upgrade to the new EndNote!", True, False),
+            window(2, 7, "#32770", "EndNote 2025 is here!", True, False),
+            window(3, 7, "#32770", "EndNote 21 Select Matching Reference", True, False),
+        ]
+        buttons = {
+            1: [(1, "Learn More...", 11), (2, "Cancel", 12), (3, "Ignore This", 13)],
+            2: [(1, "Learn More...", 21), (2, "Cancel", 22), (3, "Ignore This", 23)],
+            3: [(1, "&Find", 31), (2, "Cancel", 32)],
+        }
+        clicked: list[int] = []
+
+        class User32:
+            @staticmethod
+            def SendMessageW(handle, message, wparam, lparam):
+                clicked.append(handle)
+
+        for name, value in (("windows_of", lambda pids: windows), ("buttons_of", lambda handle: buttons[handle]),
+                            ("_user32", User32)):
+            self.addCleanup(setattr, self.session, name, getattr(self.session, name))
+            setattr(self.session, name, value)
+        self.assertEqual(
+            self.session.dismiss_notices({7}),
+            ["Holiday Sale: Save 25% when you upgrade to the new EndNote!", "EndNote 2025 is here!"],
+        )
+        self.assertEqual(clicked, [13, 22])
+        self.assertEqual(
+            [dialog["title"] for dialog in self.session.blocking_dialogs({7})],
+            ["EndNote 21 Select Matching Reference"],
+        )
+
     def test_library_windows_are_matched_by_file_name(self) -> None:
         library = Path(r"C:\Research\Draft Paper.enl")
         self.assertTrue(self.session.library_title_matches("EndNote 21 - Draft Paper.enl", library))

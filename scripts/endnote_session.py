@@ -10,20 +10,25 @@ process, so every job shares it. The behaviour below was measured on EndNote 21.
   "EndNote 2025 is here!"), each a dialog with Learn More..., Cancel and Ignore This. While one
   is visible EndNote handles no request: a library forwarded meanwhile is lost and CWYW waits.
   Cancel dismisses a notice for this run only and changes no preference.
+- Since 2026-11-24 EndNote 21 also shows a marketing notice at start-up, "Holiday Sale: Save 25%
+  when you upgrade to the new EndNote!", with the same three buttons. Its title does not start
+  with "EndNote", so only the explicit marketing allowlist below matches it.
 - A dismissed dialog stays behind as a hidden window, so only visible dialogs block anything.
 - Ending the hidden Word while CWYW waits on its Select Matching Reference chooser leaves EndNote
   unable to exit: it ignores WM_CLOSE and File > Exit for minutes. Cancel on the chooser instead
   lets CWYW give up the citation, Word close normally and EndNote exit.
 
 Nothing here terminates a process. Windows are closed with WM_CLOSE, the same request a click on
-the close button sends, and the only button ever pressed is Cancel, on a news notice or on the
-record chooser. The only Word state touched is the recovery entry of a document that a job's
-hidden Word had open when the server had to end it.
+the close button sends. The only buttons ever pressed are Cancel, on a news notice or on the
+record chooser, and the safe button of a listed marketing notice: Ignore This, else Cancel, else
+Close, never Learn More... or any purchase or sign-in button. The only Word state touched is the
+recovery entry of a document that a job's hidden Word had open when the server had to end it.
 """
 
 from __future__ import annotations
 
 import ctypes
+import fnmatch
 import glob
 import logging
 import os
@@ -41,6 +46,11 @@ WORD_DIALOG_CLASS_PREFIX = "bosa_sdm"
 NOTICE_TITLE_PREFIX = "EndNote"
 CANCEL_TEXT = "Cancel"
 NOTICE_BUTTONS = frozenset({"Learn More...", CANCEL_TEXT, "Ignore This"})
+# Marketing and upgrade notices, matched case-insensitively on the whole title. Keep this list
+# small and explicit: a dialog that matches none of it is reported under attention, never clicked.
+MARKETING_NOTICE_TITLES = ("holiday sale*", "*upgrade to the new endnote*")
+# Pressed in this order of preference; Learn More... opens the vendor's sales page.
+MARKETING_NOTICE_BUTTONS = ("Ignore This", CANCEL_TEXT, "Close")
 CANCEL_CONTROL_ID = 2
 WM_CLOSE = 0x0010
 BM_CLICK = 0x00F5
@@ -142,6 +152,18 @@ def is_notice(title: str, button_texts: set[str]) -> bool:
     return title.startswith(NOTICE_TITLE_PREFIX) and button_texts == NOTICE_BUTTONS
 
 
+def marketing_notice_button(title: str, button_texts: set[str]) -> str | None:
+    """The safe button that answers a listed marketing notice, or None for every other dialog."""
+    folded = title.casefold()
+    if not any(fnmatch.fnmatchcase(folded, pattern) for pattern in MARKETING_NOTICE_TITLES):
+        return None
+    return next((text for text in MARKETING_NOTICE_BUTTONS if text in button_texts), None)
+
+
+def is_dismissable(title: str, button_texts: set[str]) -> bool:
+    return is_notice(title, button_texts) or marketing_notice_button(title, button_texts) is not None
+
+
 def is_dialog(window: Window) -> bool:
     return window.class_name == DIALOG_CLASS or window.class_name.startswith(WORD_DIALOG_CLASS_PREFIX)
 
@@ -156,27 +178,36 @@ def press_cancel(dialog_handle: int) -> bool:
 
 
 def dismiss_notices(endnote_process_ids: set[int]) -> list[str]:
-    """Press Cancel on every visible EndNote news notice and return their titles."""
+    """Press Cancel on every visible EndNote news notice and the safe button on every listed
+    marketing notice; return their titles."""
     dismissed: list[str] = []
     for window in windows_of(endnote_process_ids):
         if not (window.visible and window.class_name == DIALOG_CLASS):
             continue
-        if not is_notice(window.title, {text for _, text, _ in buttons_of(window.handle)}):
-            continue
-        if press_cancel(window.handle):
+        buttons = buttons_of(window.handle)
+        texts = {text for _, text, _ in buttons}
+        if is_notice(window.title, texts):
+            pressed = CANCEL_TEXT if press_cancel(window.handle) else None
+        else:
+            pressed = marketing_notice_button(window.title, texts)
+            for _, text, handle in buttons:
+                if text == pressed:
+                    _user32.SendMessageW(handle, BM_CLICK, 0, 0)
+                    break
+        if pressed is not None:
             dismissed.append(window.title)
-            LOGGER.info("Dismissed the EndNote notice %r with Cancel.", window.title)
+            LOGGER.info("Dismissed the EndNote notice %r with %s.", window.title, pressed)
     return dismissed
 
 
 def blocking_dialogs(process_ids: set[int]) -> list[dict[str, object]]:
-    """Visible dialogs other than news notices; reported, never clicked."""
+    """Visible dialogs other than the notices dismiss_notices answers; reported, never clicked."""
     found: list[dict[str, object]] = []
     for window in windows_of(process_ids):
         if not (window.visible and is_dialog(window)):
             continue
         texts = [text for _, text, _ in buttons_of(window.handle)]
-        if not is_notice(window.title, set(texts)):
+        if not is_dismissable(window.title, set(texts)):
             found.append({"handle": window.handle, "process_id": window.process_id, "title": window.title, "buttons": texts})
     return found
 
