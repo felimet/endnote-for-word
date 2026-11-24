@@ -41,6 +41,7 @@
 | Library read fails with a lock or malformed database error | The original `sdb.eni` was opened, or EndNote was mid-write | Copy to a temp file first, open the copy read-only, retry. See section 10. |
 | `validate` exits 3 with `{{CITE:` still present | A marker was never replaced | The marker did not occur exactly once in the document. See section 11. |
 | `validate` exits 3 on the citation count | A merged citation was counted twice | Apply the counting rule, subtracting `ADDIN EN.CITE.DATA` fields. See section 11. |
+| `validate` reports `The bibliography does not visibly contain 'doi: https://doi.org/...'` for a conference paper | The output style's template for the record's reference type has no DOI field; measured with a personal IEEE-DOI style whose Conference Paper template (RIS `CPAPER`) prints `presented at ...` without the DOI while its Conference Proceedings template (RIS `CONF`) prints it | Import the record again as `CONF` with the proceedings title in `T2`, cite the new record, or add the DOI to that template in the style. |
 | `validate` exits 3 on style | `EN.Layout` style does not equal the manifest style | Run `set-style`, then validate again. |
 | Manifest rejected for a `prefix` key | Prefix and excluded author syntax are not supported in v1 | Both open modal dialogs. See `temporary-citations.md`. |
 | Precheck reports `library_doi_not_canonical` | The EndNote DOI field contains `doi:` or a resolver URL | Keep only the bare DOI in EndNote, then rerun precheck. |

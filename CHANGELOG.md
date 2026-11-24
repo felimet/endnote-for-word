@@ -25,6 +25,10 @@ All notable changes to this project are documented in this file. The format foll
   field drops out but text set off by a space always prints, so a style whose `doi:` label is
   not tied to the DOI field with Link Adjacent Text leaves a bare `doi:` for a `no_doi` record.
   That output has not been measured on EndNote 21.
+- Measured on EndNote 21.5 (Bld 18513) with Word for Microsoft 365: `import_reference_file`
+  confirmed the target by `open_handle` while `Recent Libraries\File1` named another library and
+  dismissed the Holiday Sale notice with Cancel; a render with 10 `no_doi` targets (web pages,
+  extension articles and patents) next to 98 DOI targets ran in one pass, and validate passed.
 
 ### Fixed
 
